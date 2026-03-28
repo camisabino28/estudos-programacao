@@ -1,0 +1,343 @@
+---
+title: "Investimento"
+author: "Camila Sabino Ribeiro"
+date: "2025-05-08"
+output: 
+ html_document:
+   toc: true
+   toc_float: true
+---
+## **Motivação Econômica**
+
+<p style="text-align: justify;"> O Investimento representa um dos principais indicadores do dinamismo econômico de um país, se falarmos mais especificamente da FFormação Bruta de Capital Fixo (FBCF), ela reflete os investimentos em bens de capital que ampliam a capacidade produtiva da economia. No contexto brasileiro, a evolução da FBCF está intrinsecamente ligada ao ciclo de investimentos em infraestrutura, capacidade industrial e modernização tecnológica. Como componente fundamental do PIB, seu desempenho sinaliza a confiança dos agentes econômicos no futuro do país e sua disposição em alocar recursos para expansão da capacidade produtiva. </p>
+
+#### Principais Características da FBCF no Brasil:
+
+- Motor do Crescimento Econômico: Representa a parcela do PIB destinada à aquisição de máquinas, equipamentos, construções e inovações tecnológicas que aumentam a produtividade da economia no longo prazo;
+
+- Sensibilidade ao Ambiente de Negócios: Os níveis de investimento respondem fortemente a indicadores como taxa de juros, marco regulatório e expectativas sobre o crescimento econômico;
+
+- Composição Setorial Diversificada: Envolve investimentos em infraestrutura (energia, transportes), setor industrial (bens de capital) e construção civil, com impactos multiplicadores em toda a cadeia produtiva;
+
+
+------------------------------------------------------------------------
+
+## **Análise Exploratória e Gráfica**
+
+Nesta etapa, vamos carregar os dados do Investimento e realizar a análise gráfica da série e definir o melhor modelo.
+
+```{r, message = FALSE, warning= FALSE}
+library(ipeadatar)
+
+# Baixar a série SCN104_PIBFBKFAS104 (PIB - Formação Bruta de Capital Fixo: : índice real encadeado dessazonalizado)
+dados_pib_fbkf <- ipeadatar::ipeadata(code = "SCN104_PIBFBKFAS104", language = "br")
+
+# Visualizar os primeiros registros
+head(dados_pib_fbkf)
+
+# Plotar a série temporal
+library(ggplot2)
+
+ggplot(dados_pib_fbkf, aes(x = date, y = value)) +
+  geom_line(color = "darkred", size = 1) +
+  labs(
+    title = "PIB - Formação Bruta de Capital Fixo: índice real encadeado dessazonalizado (SCN104_PIBFBKFAS104)",
+    subtitle = "Fonte: IPEA Data",
+    x = "Ano",
+    y = "Valor (em R$ milhões)"
+  ) +
+  theme_minimal()
+```
+
+Visualmente podemos inferir que a série não parece ser estacionária. Podemos utilizar uma função de decomposição da série para destacar tendência, sazonalidade e componente irregular:
+
+```{r, message = FALSE, warning= FALSE}
+# Baixar a série do IPEA (Formação Bruta de Capital Fixo)
+dados_pib_fbkf <- ipeadatar::ipeadata(code = "SCN104_PIBFBKFAS104", language = "br")
+
+## Transformar em série temporal (classe ts)
+# Supondo que a série seja trimestral e inicie no primeiro trimestre do primeiro ano disponível
+# Ajuste a frequência para 4 (trimestres), 12 (mensal), ou 1 (anual), conforme o caso
+frequencia <- 4
+inicio <- c(as.numeric(format(min(dados_pib_fbkf$date), "%Y")),
+            as.numeric(format(min(dados_pib_fbkf$date), "%m")) / (12 / frequencia))
+
+serie_ts <- ts(dados_pib_fbkf$value, start = inicio, frequency = frequencia)
+
+
+library(ggplot2)
+library(forecast)
+decomp <- decompose(serie_ts)
+autoplot(decomp) +
+  ggtitle("Decomposição da Série do Investimento")
+
+```
+
+A decomposição da série do Investimento mostra que ele possui: 
+
+• Tendência positiva de longo prazo com inflexões econômicas claras;
+
+• Sazonalidade forte, estável e previsível;
+
+• Resíduos controlados, com exceções em períodos de crise.
+
+### Verificação de Estacionaridade e Diferenciação
+
+• A estacionaridade é essencial para a modelagem Box-Jenkins, que consiste na estimação (data fitting) de modelos da família ARIMA.
+
+• A série do Investimento não é estacionária, pois tem tendência.
+
+• Por enquanto, aplicamos a primeira diferenciação e visualizamos o resultado:
+
+```{r, message = FALSE}
+library(tseries)
+library(ggplot2)
+
+# Supondo que 'serie_ts' já é uma série temporal com frequência definida
+
+# Primeira diferenciação (log returns ou crescimento percentual aproximado)
+inv_diff1 <- diff(log(serie_ts))
+
+# Visualização
+autoplot(inv_diff1) +
+  ggtitle("Série Investimento após Primeira Diferenciação") +
+  xlab("Tempo") +
+  ylab(" Tx crescimento Investimento")
+
+```
+
+Vamos agora testar se a série diferenciada é estacionária:
+
+#### Teste de Dickey-Fuller
+
+```{r, message = FALSE, warning=FALSE}
+adf_test <- adf.test(inv_diff1)
+print(adf_test)
+```
+
+#### Teste de Phillips-Perron
+
+```{r, message = FALSE, warning=FALSE}
+pp_test <- pp.test(inv_diff1)
+print(pp_test)
+```
+
+#### Teste de KPSS
+
+```{r, message = FALSE, warning=FALSE}
+kpss_test <- kpss.test(inv_diff1)
+print(kpss_test)
+```
+
+Com isso, podemos concluir que a série é estacionária, pois o teste de Dickey-Fuller e Phillips-Perron apresentaram um p valor baixo, ou seja podemos rejeitar a hipótese nula → Não há Raiz Unitária e vale a hipótese alternativa: o processo é estacionário. E pelo teste de KPSS não possível rejeitar a hipótese nula, portanto, é estácionario.
+
+### Identificação da ordem do modelo
+
+#### Metodologia Box-Jenkins: Grid Search
+
+Correlograma da série de IPCA com 1 diferenciação:
+
+```{r, message = FALSE, warning=FALSE}
+par(mfrow=c(1,2))
+vacf <- acf(inv_diff1, lag.max = 12, main="ACF")
+vpacf <- pacf(inv_diff1, lag.max = 12, main="PACF")
+
+```
+
+Pelo gráfico da ACF, observa-se um valor com significância no lag 4, o que sugere que a série pode ser modelada por um processo MA(6). Já o gráfico da PACF apresenta significância na defasagem 4, indicando a possibilidade de um componente AR(5), entretantto foi realizado um teste com esses valores para range e o melhor modelo no teste de Ljung-Box apresentou que havia correlação entre os erros, portanto o range foi aumentado para ver se tinha um modelo melhor para explicar.
+
+Desse modo, a partir da análise do correlograma da série, exploramos diferentes combinações dos parâmetros p e q (variando de 0 a 5 e 0 a 6, respectivamente) e compararemos os modelos com base nos critérios AIC e BIC.
+
+```{r, message = FALSE, warning=FALSE}
+
+# Definindo intervalos para os parâmetros p e q
+p_range <- 0:5
+q_range <- 0:6
+# Inicializando objetos para armazenar os modelos e resultados
+modelos <- list()
+resultados <- data.frame(p = integer(), d = integer(), q = integer(),
+                         
+                         AIC = double(), BIC = double(), stringsAsFactors = FALSE)
+
+# Loop para testar todas as combinações de p e q
+for (p in p_range) {
+  for (q in q_range) {
+    order_spec <- c(p, 0, q)
+    modelo_atual <- try(arima(inv_diff1, order = order_spec), silent = TRUE)
+    if (!inherits(modelo_atual, "try-error")) {
+      aic_val <- AIC(modelo_atual)
+      bic_val <- BIC(modelo_atual)
+      resultados <- rbind(resultados, data.frame(p = p, d = 0, q = q,
+                                                 
+                                                 AIC = aic_val, BIC = bic_val))
+      nome_modelo <- paste("ARIMA(", p, ",", 0, ",", q, ")", sep = "")
+      modelos[[nome_modelo]] <- modelo_atual
+      cat(sprintf("Modelo %s: AIC = %.2f, BIC = %.2f\n", nome_modelo, aic_val, bic_val))
+    }
+  }
+}
+# Visualizando a tabela de resultados
+print(resultados)
+
+```
+
+Selecionando o melhor modelo baseado no menor AIC
+
+```{r, message = FALSE, warning=FALSE}
+melhor_index <- which.min(resultados$AIC)
+melhor_modelo_params <- resultados[melhor_index, ]
+nome_melhor_modelo <- paste("ARIMA(", melhor_modelo_params$p, ",",
+                            
+                            melhor_modelo_params$d, ",", melhor_modelo_params$q, ")", sep = "")
+
+melhor_modelo <- modelos[[nome_melhor_modelo]]
+cat("Melhor modelo selecionado:", nome_melhor_modelo,
+    "com AIC =", melhor_modelo_params$AIC, "\n")
+
+```
+Comparando com o modelo sugerido pelo auto.arima():
+
+```{r, message = FALSE, warning=FALSE}
+modelo_auto <- auto.arima(inv_diff1)
+cat("Modelo sugerido pelo auto.arima():\n")
+summary(modelo_auto)
+```
+
+
+A partir disso, o melhor modelo com base no menor AIC e no modelo sugerido pelo auto.arima() é o ARIMA(0,0,1). Esse resultado foi encontrado tanto manualmente, quanto pelo auto,arima().
+
+Após ajustar um modelo de séries temporais, como um ARIMA, é fundamental realizar o diagnóstico dos resíduos para verificar se o modelo é adequado. Um bom modelo deve produzir resíduos que se comportem como ruído branco, ou seja, sem autocorrelação, com média próxima de zero e variância constante. Desse modo, iremos fazer a validação do modelo a partir do diagnóstico dos resíduos.
+
+------------------------------------------------------------------------
+
+## **Validação do Modelo**
+
+Iremos fazer um diagnóstico de resíduos e aplicar testes de normalidade, autocorrelação e heteroscedasticidade.
+
+### Diagnóstico dos Resíduos
+
+```{r, message = FALSE, warning=FALSE}
+checkresiduals(melhor_modelo)
+```
+
+Dessa forma, pelo teste de Ljung-Box não podemos rejeitar a hipótese nula de que não há correlação entre os erros.
+
+### Teste de Normalidade
+
+#### Estimativa de Kernel
+
+```{r, message = FALSE, warning=FALSE}
+library("xts")
+# Estimar a densidade kernel
+densidade <- density(inv_diff1, kernel = "gaussian")
+# Plotar a densidade kernel
+plot(densidade, main = "Estimativa de Densidade Kernel", xlim=c(-0.3,0.2),ylim=c(0,20), col = "black", lwd=2)
+hist(inv_diff1, freq = FALSE, add = TRUE, breaks = 50, col = "lightblue")
+sigma_emp = sd(inv_diff1)
+lines(density(rnorm(10000,0, sigma_emp)), col = "red", lwd=2)
+lines(densidade, col = "black", lwd=2)
+```
+
+A estimativa de densidade kernel revela que os dados apresentam assimetria negativa e desvios da normalidade (curtose elevada e cauda mais longa à esquerda)
+
+#### Teste de Jarque-Bera
+
+```{r, message = FALSE, warning=FALSE}
+library(moments)
+# Calculando os momentos
+mean_x <- mean(inv_diff1) # Primeiro momento: média
+var_x <- var(inv_diff1) # Segundo momento: variância
+skew_x <- skewness(inv_diff1) # Terceiro momento: assimetria
+kurt_x <- kurtosis(inv_diff1) # Quarto momento: curtose
+# Criando a tabela com os momentos
+momentos <- data.frame(
+  Momento = c("Média", "Variância", "Assimetria", "Curtose"),
+  Valor = c(mean_x, var_x, skew_x, kurt_x)
+)
+# Exibindo a tabela
+print(momentos)
+# Realizando o teste de Jarque-Bera
+jb_test <- jarque.bera.test(inv_diff1)
+# Exibindo os resultados
+print(jb_test)
+# Realizando o teste de Shapiro-Wilk
+sw_test <- shapiro.test(inv_diff1[1:5000])
+# Exibindo os resultados
+print(sw_test)
+
+```
+
+Pelo teste de Jarque-Bera, com um p-valor muito pequeno indica que a série inv_diff1 não segue uma distribuição normal e esse resultado é corroborado também pelo teste de Shapiro-Wilk, que indica a série não é normalmente distribuída, pois é possível rejeitar a hipótese nula.
+
+### Teste LM
+
+```{r, message = FALSE, warning=FALSE}
+library(lmtest)
+modelo_ar1 <- arima(inv_diff1, order= c(0,0,1))
+residuos <- residuals(modelo_ar1)
+
+# Ajuste um modelo linear com os resíduos defasados
+mod_resid_lm <- lm(residuos ~ ., data = residuos)
+
+# Realizando o teste de Breusch-Godfrey para autocorrelação de ordem até 12
+bg_test <- bgtest(mod_resid_lm, order = 12, type = "Chisq")
+
+# Exibindo os resultados
+print(bg_test)
+
+
+```
+
+Com isso, o modelo de regressão não apresenta autocorrelação serial nos resíduos, pois não é possível rejeitar a hipótese nula.
+
+### Teste ARCH-LM
+
+```{r, message = FALSE, warning=FALSE}
+# Regressão auxiliar
+modelo_aux <- lm(I(residuos^2) ~ lag(I(residuos^2), 1) + lag(I(residuos^2), 2) + lag(I(residuos^2), 3))
+resultado_arch_lm <- bgtest(modelo_aux, order = 3)
+# Resultado do teste
+print(resultado_arch_lm)
+
+```
+
+Dessa forma não há heterocedasticidade condicional, pois não há como rejeitar a hipótese nula.
+------------------------------------------------------------------------
+
+## **Previsão**
+
+Gerando previsões para os próximos 12 período:
+
+```{r, message = FALSE, warning=FALSE}
+previsoes <- forecast(melhor_modelo, h = 12)
+autoplot(previsoes) +
+  ggtitle("Previsão do Investimento com o Melhor Modelo ARIMA") +
+  xlab("Tempo") +
+  ylab("Valor Previsto")
+print(previsoes)
+
+```
+
+***
+
+## **Conclusões**
+
+• A série original do Investimento apresentou não estacionariedade, com evidência de tendência. Por isso, foi aplicada diferenciação para garantir estacionariedade antes da modelagem;
+
+• O modelo escolhido foi:
+
+SARIMA(0,0,1);
+
+Esse modelo inclui um termo autorregressivo e de média móvel (AR e MA);
+
+• Os resíduos do modelo foram avaliados quanto à autocorrelação e heterocedasticidade:
+
+   -O teste de Ljung-Box e o teste LM mostraram ausência de autocorrelação significativa nos resíduos;
+
+   -O teste ARCH-LM indicou ausência de efeitos ARCH, ou seja, sem heterocedasticidade condicional;
+
+• A normalidade dos resíduos foi analisada:
+
+   -Os testes de Jarque-Bera e Shapiro Walk indicaram que os resíduos não seguem distribuição normal.
+
+

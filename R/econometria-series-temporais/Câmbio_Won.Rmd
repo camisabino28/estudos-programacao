@@ -1,0 +1,349 @@
+---
+title: "Taxa de Câmbio KRW/BR"
+author: "Camila Sabino Ribeiro"
+output: 
+ html_document:
+   toc: true
+   toc_float: true
+date: "2025-04-28"
+---
+## **Motivação Econômica**
+<p style="text-align: justify;">• A taxa de câmbio entre o **won sul-coreano (KRW)** e o **real brasileiro (BRL)** reflete as relações comerciais e financeiras entre a Coreia do Sul e o Brasil, dois países com economias dinâmicas e complementares. A Coreia do Sul é um dos principais parceiros comerciais do Brasil na Ásia, destacando-se na exportação de eletrônicos, automóveis e produtos industriais, enquanto o Brasil fornece commodities como minério de ferro, soja e carne, além de produtos manufaturados. <p/>
+
+<p style="text-align: justify;">• A motivação econômica por trás da análise dessa taxa de câmbio está na compreensão dos fluxos comerciais, dos investimentos bilaterais e dos impactos macroeconômicos que influenciam ambas as economias. A volatilidade dessa paridade cambial pode afetar diretamente empresas exportadoras e importadoras, turismo e até mesmo políticas monetárias, tornando essencial o acompanhamento de seus movimentos e tendências.
+
+#### Principais Características da Taxa de Câmbio KRW/BRL:
+
+– Influência de Commodities: O real brasileiro é sensível aos preços de commodities, enquanto o won sul-coreano reage à demanda por exportações de tecnologia e manufaturados;
+
+– Risco Global: Crises geopolíticas na Ásia ou turbulências na América Latina podem aumentar a volatilidade dessa taxa;
+
+– Fluxos Financeiros: Investimentos sul-coreanos no Brasil (especialmente em setores como energia e infraestrutura) impactam a demanda relativa pelas moedas;
+
+
+***
+
+## **Análise Exploratória e Gráfica**
+Nesta etapa, vamos carregar os dados da Taxa de Câmbio Won-Real e realizar a análise gráfica da série e definir o melhor modelo.
+
+```{r, message = FALSE, warning= FALSE}
+library(quantmod)
+# Baixar dados do USD/BRL e USD/KRW
+usd_brl <- getSymbols("BRL=X", src = "yahoo", from = "2000-01-01", auto.assign = FALSE)
+usd_krw <- getSymbols("KRW=X", src = "yahoo", from = "2000-01-01", auto.assign = FALSE)
+
+# Extrair fechamento
+usd_brl_close <- Cl(usd_brl)
+usd_krw_close <- Cl(usd_krw)
+
+# Alinhar datas
+aligned_data <- na.omit(merge(usd_brl_close, usd_krw_close))
+
+# Calcular taxa KRW/BRL (quantos reais por 1 won)
+krw_brl <- aligned_data[,1] / aligned_data[,2]  # BRL por KRW
+
+# Renomear
+colnames(krw_brl) <- "KRW/BRL"
+
+# Plotar
+chartSeries(krw_brl, type = "line", theme = chartTheme("white"),
+            name = "Taxa de câmbio Bruta KRW/BRL")
+
+```
+
+Visualmente podemos inferir que a série não parece ser estacionária. Podemos utilizar uma função de decomposição da série para destacar tendência, sazonalidade e componente irregular:
+
+```{r, message = FALSE}
+
+# Converter para série ts
+krw_brl_ts <- ts(as.numeric(krw_brl), frequency = 252, start = c(2000,1))
+
+library(ggplot2)
+library(forecast)
+decomp <- decompose(krw_brl_ts)
+autoplot(decomp) +
+  ggtitle("Decomposição da Série do Câmbio - Won ")
+
+```
+
+A decomposição da série da Taxa de Câmbio mostra que ela possui: 
+
+• Tendência suavemente variável e não linear;
+
+• Sazonalidade leve mas presente;
+
+• Resíduos com agrupamento de volatilidade e variação temporal na variância.
+
+### Verificação de Estacionaridade e Diferenciação
+• A estacionaridade é essencial para a modelagem Box-Jenkins, que consiste na estimação (data fitting) de modelos da família ARIMA.
+
+• A série da taxa de Câmbio KRW/BRL não é estacionária, pois tem tendência.
+
+• Por enquanto, aplicamos a primeira diferenciação e visualizamos o resultado. Entretanto, cabe ressaltar que, como estamos tratando de uma taxa, não convém aplicar a primeira diferenciação sobre o log do Taxa de Câmbio KRW/BR, já que a série apresenta valores iguais ou proximos de 0:
+
+```{r, message = FALSE}
+library(tseries)
+krw_diff <- diff(log(krw_brl_ts))
+autoplot(krw_diff) +
+  ggtitle("Série da Taxa de Câmbio KRW/BRL após Primeira Diferenciação") +
+  xlab("Tempo") +
+  ylab(" Tx crescimento Taxa de Câmbio KRW/BRL")
+
+```
+
+Vamos agora testar se a série diferenciada é estacionária:
+
+#### Teste de Dickey-Fuller
+```{r, message = FALSE, warning=FALSE}
+adf_test <- adf.test(krw_diff)
+print(adf_test)
+```
+#### Teste de Phillips-Perron
+```{r, message = FALSE, warning=FALSE}
+pp_test <- pp.test(krw_diff)
+print(pp_test)
+```
+#### Teste de KPSS
+```{r, message = FALSE, warning=FALSE}
+kpss_test <- kpss.test(krw_diff)
+print(kpss_test)
+```
+
+Com isso, podemos concluir que a série é estacionária, pois o teste de Dickey-Fuller e Phillips-Perron apresentaram um p valor baixo, ou seja podemos rejeitar a hipótese nula → Não há Raiz Unitária e vale a hipótese alternativa: o processo é estacionário. E pelo teste de KPSS não possível rejeitar a hipótese nula, portanto, é estácionario.
+
+### Identificação da ordem do modelo
+#### Metodologia Box-Jenkins: Grid Search
+Correlograma da série de câmbio com 1 diferenciação:
+
+```{r, message = FALSE, warning=FALSE}
+par(mfrow=c(1,2))
+vacf <- acf(krw_diff, lag.max = 12, main="ACF")
+vpacf <- pacf(krw_diff, lag.max = 12, main="PACF")
+```
+
+Pelo gráfico da ACF, observa-se um valor com significância no lag 6, o que sugere que a série pode ser modelada por um processo MA(10). Já o gráfico da PACF apresenta significância na defasagem 9, indicando a possibilidade de um componente AR(9).
+
+Desse modo, a partir da análise do correlograma da série, exploramos diferentes combinações dos parâmetros p e q (variando de 0 a 9 e 0 a 12, respectivamente) e compararemos os modelos com base nos critérios AIC e BIC.
+
+
+```{r, message = FALSE, warning=FALSE}
+
+# Definindo intervalos para os parâmetros p e q
+p_range <- 0:9
+q_range <- 0:12
+# Inicializando objetos para armazenar os modelos e resultados
+modelos <- list()
+resultados <- data.frame(p = integer(), d = integer(), q = integer(),
+                         
+                         AIC = double(), BIC = double(), stringsAsFactors = FALSE)
+
+# Loop para testar todas as combinações de p e q
+for (p in p_range) {
+  for (q in q_range) {
+    order_spec <- c(p, 0, q)
+    modelo_atual <- try(arima(krw_diff, order = order_spec), silent = TRUE)
+    if (!inherits(modelo_atual, "try-error")) {
+      aic_val <- AIC(modelo_atual)
+      bic_val <- BIC(modelo_atual)
+      resultados <- rbind(resultados, data.frame(p = p, d = 0, q = q,
+                                                 
+                                                 AIC = aic_val, BIC = bic_val))
+      nome_modelo <- paste("ARIMA(", p, ",", 0, ",", q, ")", sep = "")
+      modelos[[nome_modelo]] <- modelo_atual
+      cat(sprintf("Modelo %s: AIC = %.2f, BIC = %.2f\n", nome_modelo, aic_val, bic_val))
+    }
+  }
+}
+# Visualizando a tabela de resultados
+print(resultados)
+
+```
+
+Selecionando o melhor modelo baseado no menor AIC
+```{r, message = FALSE, warning=FALSE}
+melhor_index <- which.min(resultados$AIC)
+melhor_modelo_params <- resultados[melhor_index, ]
+nome_melhor_modelo <- paste("ARIMA(", melhor_modelo_params$p, ",",
+                            
+                            melhor_modelo_params$d, ",", melhor_modelo_params$q, ")", sep = "")
+
+melhor_modelo <- modelos[[nome_melhor_modelo]]
+cat("Melhor modelo selecionado:", nome_melhor_modelo,
+    "com AIC =", melhor_modelo_params$AIC, "\n")
+
+```
+Comparando com o modelo sugerido pelo auto.arima():
+```{r, message = FALSE, warning=FALSE}
+modelo_auto <- auto.arima(krw_diff)
+cat("Modelo sugerido pelo auto.arima():\n")
+summary(modelo_auto)
+```
+
+Pelo valor alto do MA(4) e AR(4), encontrado de forma manual, que pode indicar a sazonalidade, iremos fazer o SARIMA:
+
+```{r}
+# Estimar modelo SARIMA automaticamente
+modelo_sarima <- auto.arima(krw_diff, seasonal = TRUE, stepwise = FALSE, approximation = FALSE)
+
+# Ver resultados
+summary(modelo_sarima)
+
+```
+
+A partir disso, o melhor modelo com base no menor AIC e no auto.arima() e no SARIMA é o ARIMA(4,0,4), entretanto o modelo sugerido pelo auto.arima() é o ARIMA(4,0,0), que apesar de ter menos parâmetros tem um AIC maior, então iremos usar o modelo com o menor AIC, pois o modelo tem melhor desempenho em validação.
+
+Após ajustar um modelo de séries temporais, como um ARIMA, é fundamental realizar o diagnóstico dos resíduos para verificar se o modelo é adequado. Um bom modelo deve produzir resíduos que se comportem como ruído branco, ou seja, sem autocorrelação, com média próxima de zero e variância constante. Desse modo, iremos fazer a validação do modelo a partir do diagnóstico dos resíduos.
+
+***
+
+## **Validação do Modelo**
+Iremos fazer um diagnóstico de resíduos e aplicar testes de normalidade, autocorrelação e heteroscedasticidade.
+
+### Diagnóstico dos Resíduos
+```{r, message = FALSE, warning=FALSE}
+checkresiduals(melhor_modelo)
+```
+
+Dessa forma, pelo teste de Ljung-Box não podemos rejeitar a hipótese nula de que não há correlação entre os erros.
+
+### Teste de Normalidade
+#### Estimativa de Kernel
+```{r, message = FALSE, warning=FALSE}
+library("xts")
+# Estimar a densidade kernel
+densidade <- density(krw_diff, kernel = "gaussian")
+# Plotar a densidade kernel
+plot(densidade, main = "Estimativa de Densidade Kernel", xlim=c(-0.1,0.1),ylim=c(0,50), col = "black", lwd=2)
+hist(krw_diff, freq = FALSE, add = TRUE, breaks = 50, col = "lightblue")
+sigma_emp = sd(krw_diff)
+lines(density(rnorm(10000,0, sigma_emp)), col = "red", lwd=2)
+lines(densidade, col = "black", lwd=2)
+```
+
+A estimativa de densidade kernel revela que os dados apresentam desvios da normalidade (curtose elevada)
+
+#### Teste de Jarque-Bera
+``` {r, message = FALSE, warning=FALSE}
+library(moments)
+# Calculando os momentos
+mean_x <- mean(krw_diff) # Primeiro momento: média
+var_x <- var(krw_diff) # Segundo momento: variância
+skew_x <- skewness(krw_diff) # Terceiro momento: assimetria
+kurt_x <- kurtosis(krw_diff) # Quarto momento: curtose
+# Criando a tabela com os momentos
+momentos <- data.frame(
+  Momento = c("Média", "Variância", "Assimetria", "Curtose"),
+  Valor = c(mean_x, var_x, skew_x, kurt_x)
+)
+# Exibindo a tabela
+print(momentos)
+# Realizando o teste de Jarque-Bera
+jb_test <- jarque.bera.test(krw_diff)
+# Exibindo os resultados
+print(jb_test)
+# Realizando o teste de Shapiro-Wilk
+sw_test <- shapiro.test(krw_diff[1:5000])
+# Exibindo os resultados
+print(sw_test)
+
+```
+
+### Teste LM
+``` {r, message = FALSE, warning=FALSE}
+library(lmtest)
+modelo_ar1 <- arima(krw_diff, order= c(4,0,4))
+residuos <- residuals(modelo_ar1)
+
+# Ajuste um modelo linear com os resíduos defasados
+mod_resid_lm <- lm(residuos ~ ., data = residuos)
+
+# Realizando o teste de Breusch-Godfrey para autocorrelação de ordem até 12
+bg_test <- bgtest(mod_resid_lm, order = 12, type = "Chisq")
+
+# Exibindo os resultados
+print(bg_test)
+
+
+```
+
+Esse resultado corrobora com o Ljung-Box, em que não conseguimos rejeitar a hipótese nula de que não autocorrelação entre os resíduos.
+
+### Teste ARCH-LM
+
+``` {r, message = FALSE, warning=FALSE}
+# Passo 1: Extrair os resíduos do seu modelo ARIMA
+residuos <- residuals(modelo_ar1)  
+
+# Passo 2: Definir o número de defasagens (lags) para o teste ARCH
+q <- 3  # Testando ARCH(3) 
+
+# Passo 3: Criar matriz de dados com resíduos ao quadrado e suas defasagens
+n <- length(residuos)
+resid2 <- residuos^2
+dados_arch <- data.frame(
+  resid2 = resid2[(q+1):n]  # Variável dependente: resíduos ao quadrado
+)
+
+# Adicionar defasagens como variáveis explicativas
+for (lag in 1:q) {
+  dados_arch[[paste0("lag", lag)]] <- resid2[(q+1 - lag):(n - lag)]
+}
+
+# Passo 4: Regressão auxiliar (resíduos² ~ lags dos resíduos²)
+modelo_aux <- lm(resid2 ~ ., data = dados_arch)
+
+# Passo 5: Calcular a estatística ARCH-LM (TR²) e o p-valor
+r_squared <- summary(modelo_aux)$r.squared
+lm_stat <- n * r_squared  # Estatística do teste (~Chi-quadrado com 'q' graus de liberdade)
+p_value <- pchisq(lm_stat, df = q, lower.tail = FALSE)  # p-valor
+
+# Passo 6: Resultado
+cat("\nTeste ARCH-LM para", q, "defasagens:\n",
+    "Estatística LM =", round(lm_stat, 4), "\n",
+    "p-value =", round(p_value, 4), "\n")
+
+# Interpretação:
+if (p_value < 0.05) {
+  cat("Conclusão: Rejeita H0 (há efeitos ARCH -> heterocedasticidade condicional).")
+} else {
+  cat("Conclusão: Não rejeita H0 (não há evidências de ARCH).")
+}
+
+```
+Dessa forma, há heterocedasticidade condicional. Além disso, é muito comum (e esperado) encontrar heteroscedasticidade condicional em taxas de câmbio.  Esse fenômeno reflete o fato de que a volatilidade dos retornos não é constante ao longo do tempo, mas sim variável, apresentando períodos de maior e menor instabilidade agrupados. Esse comportamento é conhecido como "volatility clustering".
+
+***
+
+## **Previsão**
+Gerando previsões para os próximos 12 período:
+``` {r, message = FALSE, warning=FALSE}
+previsoes <- forecast(melhor_modelo, h = 12)
+autoplot(previsoes) +
+  ggtitle("Previsão da Taxa de Câmbio Won-Real com o Melhor Modelo ARIMA") +
+  xlab("Tempo") +
+  ylab("Câmbio Previsto")
+print(previsoes)
+
+```
+
+***
+
+## **Conclusões**
+
+• A série original da Taxa de Câmbio Won-Real apresentou não estacionariedade, com evidência de tendência. Por isso, foi aplicada diferenciação para garantir estacionariedade antes da modelagem;
+
+• O modelo escolhido foi:
+
+ARIMA(4,0,4);
+
+Esse modelo inclui um termo autorregressivo e de média móvel (AR e MA);
+
+• Os resíduos do modelo foram avaliados quanto à autocorrelação e heterocedasticidade:
+
+   -O teste de Ljung-Box e o teste LM mostraram ausência de autocorrelação significativa nos resíduos;
+
+   -O teste ARCH-LM indicou presença de efeitos ARCH, ou seja, tem heterocedasticidade condicional, o que pode ser esperado em séries de taxas de câmbio;
+
+• A normalidade dos resíduos foi analisada:
+
+   -Os testes de Jarque-Bera e Shapiro Wilk indicaram que os resíduos não seguem distribuição normal.

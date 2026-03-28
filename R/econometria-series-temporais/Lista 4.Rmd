@@ -1,0 +1,577 @@
+---
+title: "Econometria 2 - Parte 1"
+author: "Camila Sabino e Pedro Minella"
+date: "r Sys.Date()"
+output:
+  html_document:
+    theme: 
+      font_scale: 1.1   
+    toc: true
+    toc_float: true
+---
+## Análise das séries
+
+Este relatório tem como objetivo analisar as relações dinâmicas entre o preço da ação da PETR4, o índice IBOVESPA e o preço internacional do petróleo Brent. A metodologia empregada é baseada em modelos de Vetores Autorregressivos Estruturais em Diferenças (SVARdiff), permitindo compreender como choques estruturais nas variáveis impactam o sistema econômico.
+
+A motivação central reside em compreender como o preço do petróleo, enquanto variável exógena internacional, influencia ativos brasileiros e como esses choques se propagam dentro do mercado doméstico. Além disso, avalia-se o papel da PETR4, empresa de grande peso no IBOV, na transmissão desses choques.
+
+```{r, message = FALSE, warning= FALSE}
+# Pacotes
+library(quantmod)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+# Datas
+start_date <- as.Date("2019-01-01")
+end_date <- Sys.Date()
+
+# Baixa os dados
+getSymbols("PETR4.SA", src = "yahoo", from = start_date, to = end_date)
+getSymbols("^BVSP", src = "yahoo", from = start_date, to = end_date)
+getSymbols("DCOILBRENTEU", src = "FRED", from = start_date, to = end_date)
+
+# Junta os dados
+df <- data.frame(
+  date = index(PETR4.SA),
+  PETR4 = as.numeric(Ad(PETR4.SA))
+) %>%
+  left_join(data.frame(date = index(BVSP), IBOV = as.numeric(Ad(BVSP))), by = "date") %>%
+  left_join(data.frame(date = index(DCOILBRENTEU), BRENT = as.numeric(DCOILBRENTEU)), by = "date") %>%
+  na.omit()
+
+# Normaliza com base = 100
+df_norm <- df %>%
+  mutate(
+    PETR4 = PETR4 / first(PETR4) * 100,
+    IBOV = IBOV / first(IBOV) * 100,
+    BRENT = BRENT / first(BRENT) * 100
+  ) %>%
+  pivot_longer(cols = c(PETR4, IBOV, BRENT), names_to = "Ativo", values_to = "Indice")
+
+# Gráfico com base 100
+ggplot(df_norm, aes(x = date, y = Indice, color = Ativo)) +
+  geom_line(size = 1) +
+  labs(title = "Séries Normalizadas (Base 100): PETR4, IBOVESPA e Brent",
+       x = "Data", y = "Índice (base 100)", color = "Ativo") +
+  theme_minimal() +
+  scale_x_date(date_labels = "%b %Y", date_breaks = "6 months") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+As séries aparentam ter uma tendência, portanto é possível que não sejam estacionárias, com isso aplicaremos o log:
+
+```{r, message = FALSE, warning= FALSE}
+
+# Datas
+start_date <- as.Date("2010-01-01")
+end_date <- Sys.Date()
+
+# Baixa os dados
+getSymbols("PETR4.SA", src = "yahoo", from = start_date, to = end_date)
+getSymbols("^BVSP", src = "yahoo", from = start_date, to = end_date)
+getSymbols("DCOILBRENTEU", src = "FRED", from = start_date, to = end_date)
+
+# Prepara os dados: extrai preços ajustados e junta por data
+df <- data.frame(
+  date = index(PETR4.SA),
+  PETR4 = as.numeric(Ad(PETR4.SA))
+) %>%
+  left_join(data.frame(date = index(BVSP), IBOV = as.numeric(Ad(BVSP))), by = "date") %>%
+  left_join(data.frame(date = index(DCOILBRENTEU), BRENT = as.numeric(DCOILBRENTEU)), by = "date") %>%
+  na.omit()
+
+# Aplica log natural
+# Carregue os pacotes necessários primeiro
+library(dplyr)
+library(tidyr)
+
+# Execute a transformação
+df_log <- df %>%
+  dplyr::mutate(
+    log_PETR4 = log(PETR4),
+    log_IBOV = log(IBOV),
+    log_BRENT = log(BRENT)
+  ) %>%
+  dplyr::select(date, starts_with("log_")) %>%
+  dplyr::rename_with(~ gsub("log_", "", .x)) %>%
+  tidyr::pivot_longer(cols = -date, names_to = "Ativo", values_to = "LogPreco")
+
+# Gráfico
+ggplot(df_log, aes(x = date, y = LogPreco, color = Ativo)) +
+  geom_line(size = 1) +
+  labs(title = "Séries em Escala Logarítmica: PETR4, IBOVESPA e Brent",
+       x = "Data",
+       y = "ln(Preço)",
+       color = "Ativo") +
+  theme_minimal() +
+  scale_x_date(date_labels = "%b %Y", date_breaks = "6 months") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## Teste de Raiz Unitária
+
+Nessa seção iremos testar para ver se de fato as séries são estacionárias. Inicialmente, foram conduzidos testes de estacionaridade (Augmented Dickey-Fuller - ADF e Phillips-Perron) nas séries em nível.
+```{r, message = FALSE, warning= FALSE}
+library(tseries)
+library(dplyr)
+
+# Supondo que df seja seu dataframe original já com as colunas PETR4, IBOV, BRENT
+
+# 1. Criar o dataframe com logs e diferenças dos logs
+df_adf <- df %>%
+  mutate(
+    log_PETR4 = log(PETR4),
+    log_IBOV = log(IBOV),
+    log_BRENT = log(BRENT),
+    dlog_PETR4 = c(NA, diff(log(PETR4))),
+    dlog_IBOV = c(NA, diff(log(IBOV))),
+    dlog_BRENT = c(NA, diff(log(BRENT)))
+  ) %>%
+  na.omit()
+
+# 2. Função para rodar ADF e extrair p-value
+run_adf <- function(x) {
+  test <- adf.test(x, alternative = "stationary")
+  return(list(statistic = test$statistic, p_value = test$p.value))
+}
+
+# 3. Rodar ADF para cada série e diferencas
+results <- list(
+  log_PETR4 = run_adf(df_adf$log_PETR4),
+  log_IBOV = run_adf(df_adf$log_IBOV),
+  log_BRENT = run_adf(df_adf$log_BRENT),
+  dlog_PETR4 = run_adf(df_adf$dlog_PETR4),
+  dlog_IBOV = run_adf(df_adf$dlog_IBOV),
+  dlog_BRENT = run_adf(df_adf$dlog_BRENT)
+)
+
+# 4. Mostrar resultados bonitinho
+for (name in names(results)) {
+  cat(paste0("Teste ADF para ", name, ":\n"))
+  cat(paste0("  Estatística do teste: ", round(results[[name]]$statistic, 4), "\n"))
+  cat(paste0("  p-valor: ", round(results[[name]]$p_value, 4), "\n"))
+  if (results[[name]]$p_value < 0.05) {
+    cat("  => Rejeita H0: série estacionária\n\n")
+  } else {
+    cat("  => Não rejeita H0: série não estacionária\n\n")
+  }
+}
+```
+
+```{r, message = FALSE, warning= FALSE}
+library(urca) 
+# Supondo que df seja seu dataframe original com as colunas PETR4, IBOV, BRENT
+
+# 1. Criar dataframe com logs e diferenças dos logs
+df_tests <- df %>%
+  mutate(
+    log_PETR4 = log(PETR4),
+    log_IBOV = log(IBOV),
+    log_BRENT = log(BRENT),
+    dlog_PETR4 = c(NA, diff(log(PETR4))),
+    dlog_IBOV = c(NA, diff(log(IBOV))),
+    dlog_BRENT = c(NA, diff(log(BRENT)))
+  ) %>%
+  na.omit()
+
+# 2. Função para rodar Phillips-Perron e extrair p-valor
+run_pp <- function(x) {
+  test <- pp.test(x, alternative = "stationary")
+  return(list(statistic = test$statistic, p_value = test$p.value))
+}
+
+
+# 4. Rodar testes PP  para cada série e diferença
+series_names <- c("log_PETR4", "log_IBOV", "log_BRENT", "dlog_PETR4", "dlog_IBOV", "dlog_BRENT")
+
+pp_results <- lapply(series_names, function(name) run_pp(df_tests[[name]]))
+names(pp_results) <- series_names
+
+
+# 5. Mostrar resultados bonitinho
+cat("Resultados do Teste Phillips-Perron (PP):\n")
+for (name in series_names) {
+  cat(paste0("PP para ", name, ":\n"))
+  cat(paste0("  Estatística: ", round(pp_results[[name]]$statistic, 4), "\n"))
+  cat(paste0("  p-valor: ", round(pp_results[[name]]$p_value, 4), "\n"))
+  if (pp_results[[name]]$p_value < 0.05) {
+    cat("  => Rejeita H0: série estacionária\n\n")
+  } else {
+    cat("  => Não rejeita H0: série não estacionária\n\n")
+  }
+}
+
+
+```
+
+ Os resultados, tanto do ADF e do Phillips-Perron indicaram que todas as séries — PETR4, IBOV e BRENT — são não estacionárias, apresentando p-values superiores a 5%, o que impede a utilização de modelos VAR em nível. Os resultadoss também mostram que ao diferenciar as séries ficam estacionárias, ou seja, são I(1).
+ 
+
+
+## Teste de Johasen
+
+Dados os resultados anteriores, iremos testar se há ou não cointegração entre as variáveis para ver se faremos um VEC ou um VAR em diferenças.
+
+``` {r, message = FALSE, warning= FALSE}
+library(urca)
+
+# 1. Selecionar dados e transformar em log
+log_data <- df %>%
+  dplyr::select(PETR4, IBOV, BRENT) %>%
+  dplyr::mutate(across(everything(), log))
+
+# 2. Transformar em matriz numérica (ca.jo precisa)
+log_mat <- as.matrix(log_data)
+
+# 3. Rodar teste de Johansen
+# - type = "trace" para teste pelo traço
+# - ecdet = "trend" inclui tendência determinística
+# - K = 2 número de lags (defina conforme sua série)
+johansen_test <- ca.jo(log_mat, type = "trace", ecdet = "trend", K = 2)
+
+# 4. Mostrar resumo
+summary(johansen_test)
+```
+
+O teste não rejeitou a hipótese nula de ausência de vetores de cointegração. Isso evidencia que não há relação de equilíbrio de longo prazo entre as séries analisadas, reforçando a necessidade de trabalhar com as primeiras diferenças dos logaritmos (retornos), que se mostraram estacionárias. Com isso faremos um VAR em diferenças.
+
+## VAR
+
+```{r, message = FALSE, warning=FALSE}
+# 1. Diferenças logarítmicas = retornos
+diff_mat <- diff(log_mat)
+
+library(vars)
+# 2. VAR com p lags (escolha automática)
+var_order <- VARselect(diff_mat, lag.max = 10, type = "const")$selection
+print(var_order)
+```
+Optou-se por 7 lags (seguindo AIC).
+
+```{r, message = FALSE, warning=FALSE}
+# 3. Estima VAR 
+var_model <- VAR(diff_mat, p = 7, type = "const")
+summary(var_model)
+library(stargazer)
+stargazer(var_model$varresult,
+          type = "text",   # "text" para console, ou "html"/"latex" para outros formatos
+          title = "Resumo do Modelo VAR",
+          dep.var.labels.include = TRUE,
+          digits = 3,
+          star.cutoffs = c(0.05, 0.01, 0.001),
+          no.space = TRUE)
+
+#Plotando o gráfico das razies 
+eigenvalues <- roots(var_model)
+print(eigenvalues)
+# Plotar o círculo unitário
+plot(0, 0, type = "n", xlab = "Parte Real", ylab = "Parte Imaginária",
+xlim = c(-1.5, 1.5), ylim = c(-1.5, 1.5), asp = 1)
+symbols(0, 0, circles = 1, inches = FALSE, add = TRUE)
+# Plotar as raízes
+points(Re(eigenvalues), Im(eigenvalues), col = "red", pch = 19)
+# Adicionar título
+title("Raízes do Polinômio Característico no Círculo Unitário")
+
+```
+
+Todas as raízes têm módulo < 1, indicando que o VAR é estável (condição satisfeita).
+Raízes como 0.7399, 0.3605, etc., estão dentro do círculo unitário, como se vê no gráfico.
+
+As variáveis têm pouca influência entre si nos lags testados, exceto por alguns sinais isolados (ex.: PETR4.l1 → BRENT).
+R² ajustados próximos de zero sugerem que o modelo tem utilidade limitada para previsão. Por isso iremos testar com menos lags - VAR(1) seguindo o HQ(n):
+
+```{r, message = FALSE, warning=FALSE}
+# 3. Estima VAR 
+var_model2 <- VAR(diff_mat, p = 1, type = "const")
+summary(var_model2)
+stargazer(var_model2$varresult,
+          type = "text",   # "text" para console, ou "html"/"latex" para outros formatos
+          title = "Resumo do Modelo VAR",
+          dep.var.labels.include = TRUE,
+          digits = 3,
+          star.cutoffs = c(0.05, 0.01, 0.001),
+          no.space = TRUE)
+
+#Plotando o gráfico das razies 
+eigenvalues <- roots(var_model)
+print(eigenvalues)
+# Plotar o círculo unitário
+plot(0, 0, type = "n", xlab = "Parte Real", ylab = "Parte Imaginária",
+xlim = c(-1.5, 1.5), ylim = c(-1.5, 1.5), asp = 1)
+symbols(0, 0, circles = 1, inches = FALSE, add = TRUE)
+# Plotar as raízes
+points(Re(eigenvalues), Im(eigenvalues), col = "red", pch = 19)
+# Adicionar título
+title("Raízes do Polinômio Característico no Círculo Unitário")
+
+```
+Todas as raízes têm módulo < 1, indicando que o VAR é estável (condição satisfeita).
+Raízes como 0.0735, 0.0456, etc., estão dentro do círculo unitário, como se vê no gráfico.
+
+Concluimos que as variáveis não se explicam bem umas às outras e que R² diminuiu ainda mais
+ 
+Isso reforça que:
+
+- Não há relação de curto prazo forte entre as variáveis.
+
+- O modelo VAR pode não ser o adequado para esses dados.
+
+- Seria bom testar com mais variáveis como dólar.
+
+Apesar disso seguiremos com a análise.
+
+Iremos fazer agora uma análise dos resíduos do VAR também:
+
+
+```{r, message = FALSE, warning=FALSE}
+# Plotando as séries individuais dos resíduos
+# Primeiro extraia os resíduos
+resids <- residuals(var_model)
+
+# Converta para série temporal CORRETAMENTE:
+# Opção 1: Se você sabe o start/end da série original
+resids <- ts(resids, 
+             start = c(2010, 1),  # Substitua por valores numéricos reais
+             frequency = 252)  # 12 para mensal, 4 para trimestral
+
+
+# Plotando
+par(mfrow = c(1, ncol(resids))) # Configura o layout
+for (i in 1:ncol(resids)) {
+  plot.ts(resids[, i], 
+          main = paste("Resíduos da Série", colnames(resids)[i]),
+          ylab = "Resíduos")
+}
+
+# Ljung-Box test, also known as a portmanteau test
+serial.test(var_model, lags.pt = 12, type = "PT.asymptotic")
+# Breusch-Godfrey test
+serial.test(var_model, lags.bg = 12, type = "BG")
+# Jarque-Bera
+normality.test(var_model,multivariate.only = TRUE)
+# Heteroscedasticidade
+arch_test <- arch.test( var_model, lags.multi = 12, multivariate.only = TRUE)
+print(arch_test)
+```
+
+Os testes de Ljung-Box e LM afirmam que há uma autocorrelação nos resíduos,o que significa que o modelo VAR pode estar mal especificado e não capturou toda a estrutura dinâmica das séries.
+ 
+O teste de Jarque-Bera afirma que os resíduos não são normais, há assimetria e curtose alta.
+
+O teste de ARCH indica que há heterocedasticidade condicional, sendo que a heterocedasticidade é totalmente esperada e comum em séries financeiras como PETR4, IBOV e BRENT, devido à natureza volátil e com clusters de volatilidade típica desses ativos.
+
+Concluindo, os resíduos do modelo VAR apresentam heterocedasticidade, não normalidade e autocorrelação significativas, indicando que a especificação atual é inadequada para capturar a dinâmica volátil e não linear típica de séries financeiras como PETR4, IBOV e BRENT, exigindo modelos mais robustos, como VAR-GARCH ou abordagens multivariadas com correlações dinâmicas.
+
+Apesar disso seguiremos:
+
+Agora faremos um SVAR
+
+## SVAR
+
+Diante desse cenário, a aplicação do modelo SVAR em diferenças torna-se adequada, uma vez que permite analisar as relações contemporâneas e dinâmicas de curto prazo, capturando como choques estruturais afetam o sistema econômico. A imposição de restrições na matriz B viabiliza a identificação dos choques com base em fundamentos econômicos sólidos.
+
+Além disso, a matriz estrutural foi definida considerando a hierarquia e os fundamentos econômicos das variáveis:
+
+- O preço do BRENT é determinado no mercado internacional e, portanto, é tratado como exógeno, não sofrendo influência contemporânea nem de PETR4 nem de IBOV.
+
+- O preço da ação da PETR4 responde contemporaneamente aos choques no BRENT, refletindo a sua dependência direta do mercado internacional de petróleo, mas não responde imediatamente às variações do IBOV.
+
+- O IBOV é afetado contemporaneamente tanto pelo BRENT quanto pela PETR4, capturando os impactos do mercado externo e das principais empresas domésticas.
+
+Essa configuração reflete um mecanismo de transmissão onde choques internacionais afetam diretamente empresas do setor de energia, que por sua vez impactam o mercado acionário agregado.
+
+
+```{r, message = FALSE, warning=FALSE}
+library(vars)
+library(urca)
+
+# 3. Agora estime o SVAR na representação VAR
+library(svars)
+svar_chol <- id.chol(var_model)
+svar_chol
+# Alternativa usando função SVAR:
+b_chol <- svar_chol$B
+diag(b_chol) <- NA
+b_chol[2,1] <- NA
+b_chol[3,1:2] <- NA
+svar_chol2 <- SVAR(var_model, Amat = NULL, Bmat = b_chol, estmethod = "scoring")
+svar_chol2
+
+#Colocando restrições de curto prazo:
+A_mat <- NULL
+B_mat <- matrix(NA, 3, 3)
+diag(B_mat) <- 1
+B_mat[1,2] <- 0 
+B_mat[1,3] <- 0 
+B_mat[2,3] <- 0 
+svar_ab <- SVAR(var_model, Amat = A_mat, Bmat = B_mat, estmethod = "scoring")
+svar_ab
+```
+E iremos fazer Funções de Resposta ao Impulso (IRF):
+
+```{r, message = FALSE, warning=FALSE}
+# IRFs para ambos os modelos
+irf_chol <- irf(svar_chol2, impulse = NULL, response = NULL, n.ahead = 24, boot = TRUE)
+plot(irf_chol)
+
+irf_ab <- irf(svar_ab, impulse = NULL, response = NULL, n.ahead = 24, boot = TRUE)
+plot(irf_ab)
+```
+
+```{r, message = FALSE, warning=FALSE}
+# Função para plotar IRFs comparando os dois modelos
+plot_irf_compare_two <- function(irf1, irf2, varnames, h = 24) {
+  nvar <- length(varnames)
+  par(mfrow = c(nvar, nvar), mar = c(2, 2, 2, 2))
+  for (i in 1:nvar) {
+    for (j in 1:nvar) {
+      y1 <- irf1$irf[[j]][1:h, i]
+      y2 <- irf2$irf[[j]][1:h, i]
+      ylim_min <- min(y1, y2, na.rm = TRUE)
+      ylim_max <- max(y1, y2, na.rm = TRUE)
+      plot(1:h, y1, type = "l", lwd = 2, col = "blue",
+           ylim = c(ylim_min, ylim_max),
+           main = paste(varnames[j], "→", varnames[i]),
+           xlab = "", ylab = "")
+      lines(1:h, y2, col = "red", lwd = 2, lty = 2)
+      abline(h = 0, col = "gray")
+      if (i == nvar & j == nvar) {
+        legend("bottomright", legend = c("Cholesky", "SVAR Bmat"),
+               col = c("blue", "red"), lty = c(1, 2), lwd = 2, bty = "n", cex = 0.8)
+      }
+    }
+  }
+}
+
+varnames <- c("BRENT", "IBOV", "PETR4")
+plot_irf_compare_two(irf_chol, irf_ab, varnames)
+```
+
+Ao comparar os resultados do SVAR com identificação pela matriz B e aqueles obtidos pela decomposição via Cholesky, observa-se que:
+
+O SVAR identificado pela matriz B proporciona uma representação mais aderente à realidade econômica, pois incorpora restrições que refletem relações contemporâneas fundamentadas.
+
+A decomposição de Cholesky, ao depender exclusivamente da ordenação das variáveis, pode gerar resultados enviesados, subestimando ou superestimando alguns efeitos, especialmente quando as relações contemporâneas não são corretamente representadas pela ordem escolhida.
+
+Choque em BRENT
+
+BRENT → BRENT: A resposta a choques próprios é intensa e altamente persistente, evidenciando que o petróleo é uma variável fortemente autocorrelacionada.
+
+BRENT → PETR4: A PETR4 reage de maneira positiva e significativa a um choque no petróleo, principalmente nos períodos iniciais. Este resultado é economicamente intuitivo, dado que o desempenho da Petrobras está diretamente relacionado às oscilações do preço do petróleo.
+
+BRENT → IBOV: Embora a resposta do IBOV seja positiva, sua magnitude é menor. Isso ocorre porque o IBOV é composto por diversos setores e empresas, sendo o impacto do petróleo relevante, mas não dominante.
+
+Choque em PETR4
+
+PETR4 → PETR4: A resposta é imediata e intensa, porém, como é característico de ações individuais, o efeito tende a se dissipar mais rapidamente do que no caso do BRENT.
+
+PETR4 → IBOV: O IBOV responde positivamente a choques na PETR4, evidenciando o peso significativo da empresa no índice, tanto pela sua relevância econômica quanto pelo seu peso na composição do índice.
+
+PETR4 → BRENT: Não há impacto, o que é coerente, pois uma empresa doméstica não tem capacidade de alterar o preço do petróleo no mercado internacional.
+
+Choque em IBOV
+
+IBOV → IBOV: O IBOV reage aos próprios choques de forma positiva, porém a persistência é relativamente baixa, o que é típico de índices compostos por múltiplos setores.
+
+IBOV → PETR4: Existe uma resposta da PETR4, indicando que choques no mercado agregado podem se refletir no comportamento de ações específicas.
+
+IBOV → BRENT: A resposta é praticamente nula, o que valida a hipótese de exogeneidade do preço internacional do petróleo frente ao mercado brasileiro.
+
+## Previsão
+
+```{r, message = FALSE, warning=FALSE}
+# Função para fazer previsões com intervalos de confiança
+forecast_svar <- function(svar_ab, h = 12, ci = 0.95, nboot = 100) {
+  # Converter SVAR para VAR (se necessário)
+  if (!inherits(svar_model, "varest")) {
+    var_model <- svar_model$var
+  } else {
+    var_model <- svar_model
+  }
+  
+  # Fazer previsão
+  pred <- predict(var_model, n.ahead = h, ci = ci)
+  
+  # Bootstrapping para intervalos de confiança (opcional)
+  if (nboot > 0) {
+    bs <- bootstrap_prediction(var_model, n.ahead = h, nboot = nboot, ci = ci)
+    pred$fcst <- lapply(1:length(pred$fcst), function(i) {
+      cbind(pred$fcst[[i]], 
+            "Lower BS" = bs$lower[[i]], 
+            "Upper BS" = bs$upper[[i]])
+    })
+  }
+  
+  return(pred)
+}
+
+# Função auxiliar para bootstrap (opcional)
+bootstrap_prediction <- function(var_model, n.ahead, nboot = 100, ci = 0.95) {
+  # Implementação do bootstrap...
+  # (código completo disponível no GitHub)
+}
+plot_svar_forecast <- function(forecast, actual_data, h) {
+  # Preparar dados para plotting
+  time_points <- c(time(actual_data), 
+                  seq(end(actual_data)[1] + 1/deltat(actual_data), 
+                      by = 1/deltat(actual_data), 
+                      length.out = h))
+  
+  # Criar dataframe para ggplot
+  plot_data <- data.frame()
+  for (var in names(forecast$fcst)) {
+    temp <- data.frame(
+      Time = time_points,
+      Variable = var,
+      Actual = c(as.numeric(actual_data[,var]), rep(NA, h)),
+      Forecast = c(rep(NA, nrow(actual_data)), forecast$fcst[[var]][,"fcst"]),
+      Lower = c(rep(NA, nrow(actual_data)), forecast$fcst[[var]][,"lower"]),
+      Upper = c(rep(NA, nrow(actual_data)), forecast$fcst[[var]][,"upper"])
+    )
+    plot_data <- rbind(plot_data, temp)
+  }
+  
+  # Plot
+  ggplot(plot_data, aes(x = Time)) +
+    geom_line(aes(y = Actual, color = "Observado")) +
+    geom_line(aes(y = Forecast, color = "Previsão")) +
+    geom_ribbon(aes(ymin = Lower, ymax = Upper), alpha = 0.2, fill = "blue") +
+    geom_vline(xintercept = end(actual_data)[1], linetype = "dashed", color = "red") +
+    facet_wrap(~Variable, scales = "free_y") +
+    labs(title = "Previsões SVAR com Intervalos de Confiança",
+         x = "Tempo", y = "Valor",
+         color = "Série") +
+    scale_color_manual(values = c("Observado" = "black", "Previsão" = "blue")) +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+}
+```
+
+```{r, message = FALSE, warning=FALSE}
+library(vars)
+library(ggplot2)
+library(scales)
+
+# Previsão para 8 períodos à frente
+forecast_var <- predict(var_model, n.ahead = 8)
+plot(forecast_var)
+print(forecast_var)
+```
+A alta incerteza observada nos forecasts (com amplos intervalos de confiança em torno de médias próximas de zero) reforça que o modelo VAR tradicional não está adequado para capturar a dinâmica dessas séries financeiras, conforme já indicado pelos testes de diagnóstico (heterocedasticidade, não normalidade e autocorrelação nos resíduos). Essa imprecisão nas previsões evidencia a necessidade de modelos que incorporem efeitos GARCH (para volatilidade variável no tempo) ou dependência não linear. Em suma, a incerteza excessiva não é apenas um reflexo do mercado, mas um sinal claro de que a estrutura linear do VAR subestima riscos e falha em modelar padrões complexos inerentes a séries financeiras, demandando abordagens mais sofisticadas para decisões realistas.
+
+## Conclusões
+
+Os resultados obtidos permitem traçar conclusões robustas sobre a dinâmica das variáveis analisadas:
+
+O preço do petróleo (BRENT) exerce um papel central na determinação dos movimentos tanto da PETR4 quanto do IBOV. Sua influência é direta e persistente, refletindo a dependência do mercado brasileiro em relação a choques externos.
+
+A PETR4 atua como um vetor de transmissão desses choques para o mercado doméstico, especialmente para o IBOV, dada sua representatividade econômica e seu peso no índice.
+
+O IBOV, por sua vez, responde tanto a choques internos (PETR4) quanto externos (BRENT), configurando-se como um reflexo da interação entre o ambiente doméstico e o internacional.
+
+Os resíduos do modelo VAR apresentam heterocedasticidade, não normalidade e autocorrelação significativas, indicando que a especificação atual é inadequada para capturar a dinâmica volátil e não linear típica de séries financeiras como PETR4, IBOV e BRENT, exigindo modelos mais robustos, como VAR-GARCH ou abordagens multivariadas com correlações dinâmicas.
+
+

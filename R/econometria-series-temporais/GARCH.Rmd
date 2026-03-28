@@ -1,0 +1,496 @@
+---
+title: "Lista 05"
+author: "Camila Sabino Ribeiro"
+date: "2025-06-06"
+output:
+  html_document:
+    theme: 
+      font_scale: 1.1   
+    toc: true
+    toc_float: true
+---
+## Séries
+
+Neste estudo, será estimado um modelo GARCH (Generalized Autoregressive Conditional Heteroskedasticity) para analisar a volatilidade dos retornos da ação da Apple (AAPL), incorporando variáveis explicativas externas relevantes.
+
+Além dos retornos históricos da AAPL, serão incluídas como variáveis exógenas:
+
+NASDAQ: Representando o desempenho do mercado de tecnologia como um todo.
+
+FEDFUNDS: A taxa de juros dos Federal Funds, que influencia o custo de capital e o apetite por ativos de risco.
+
+A metodologia consistirá em:
+
+Ajustar um modelo ARIMAX para a média condicional, considerando as variáveis externas.
+
+Modelar a volatilidade via GARCH, capturando a heteroscedasticidade condicional.
+
+Realizar previsões para o preço da AAPL, com intervalos de confiança que refletem a incerteza estimada.
+
+```{r, message = FALSE, warning=FALSE}
+# Carregar pacotes necessários
+library(quantmod)    # Para obter dados financeiros
+library(fredr)       # Para dados do FRED (FEDFUNDS)
+library(forecast)    # Para modelos ARIMA
+library(ggplot2)     # Para visualização
+library(dplyr)       # Para manipulação de dados
+library(forecast) # Para modelagem ARIMA e diagnóstico
+library(tseries) # Para teste de estacionariedade (ADF)
+library(FinTS)
+
+
+# 1. Obter dados da AAPL e NASDAQ do Yahoo Finance
+library(quantmod)
+
+# Defina intervalo de tempo
+start_date <- as.Date("2018-01-01")
+end_date <- Sys.Date()
+
+# Baixar dados:
+getSymbols("^IXIC", src = "yahoo", from = start_date, to = end_date)   # NASDAQ
+getSymbols("AAPL", src = "yahoo", from = start_date, to = end_date)    # Apple
+getSymbols("EFFR", src = "FRED", from = start_date, to = end_date)     # Effective Fed Funds Rate
+
+# Extrair preços ajustados
+aapl     <- Ad(AAPL)
+nasdaq   <- Ad(IXIC)
+fedfunds <- EFFR  
+
+# Unir todas as séries com mesma periodicidade
+dados <- na.omit(merge(aapl, nasdaq, fedfunds))
+colnames(dados) <- c("AAPL", "NASDAQ", "FEDFUNDS")
+
+head(dados)
+
+
+# Load required packages
+library(quantmod)
+library(ggplot2)
+library(scales)  # For better axis formatting
+
+# Assuming you've already obtained and merged the data:
+# dados <- na.omit(merge(aapl, nasdaq, fedfunds))
+# colnames(dados) <- c("AAPL", "NASDAQ", "FEDFUNDS")
+
+# Convert to data frame with date column
+dados_df <- data.frame(Date = index(dados), coredata(dados))
+
+# 1. Create individual time series plots with adjusted scales
+ggplot(dados_df, aes(x = Date)) +
+  geom_line(aes(y = AAPL, color = "AAPL")) +
+  geom_line(aes(y = NASDAQ/100, color = "NASDAQ (scaled)")) + # Scaling NASDAQ
+  geom_line(aes(y = FEDFUNDS*100, color = "FEDFUNDS (scaled)")) + # Scaling FEDFUNDS
+  scale_y_continuous(
+    name = "AAPL Price",
+    sec.axis = sec_axis(~.*1, name = "NASDAQ/100 and FEDFUNDS*100")
+  ) +
+  scale_color_manual(values = c("AAPL" = "blue", 
+                               "NASDAQ (scaled)" = "green", 
+                               "FEDFUNDS (scaled)" = "red")) +
+  labs(title = "AAPL, NASDAQ (scaled), and FEDFUNDS (scaled) Over Time",
+       x = "Date",
+       color = "Series") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+# 2. Create separate facets for better visualization
+dados_long <- reshape2::melt(dados_df, id.vars = "Date")
+
+ggplot(dados_long, aes(x = Date, y = value, color = variable)) +
+  geom_line() +
+  facet_grid(variable ~ ., scales = "free_y") +
+  labs(title = "AAPL, NASDAQ, and FEDFUNDS Over Time",
+       x = "Date",
+       y = "Value") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+
+```
+
+Visualmente, o gráfico mostra que os preços da Apple (linha vermelha) e o índice NASDAQ (linha verde) apresentam:
+
+- Tendência de alta similar entre 2020 e 2022, com quedas sincronizadas, como durante o crash da pandemia e depois em 2022.
+
+- Correções e recuperações alinhadas, o que é esperado, já que a Apple é uma das maiores componentes do NASDAQ e, portanto, seus movimentos influenciam e também refletem o índice.
+
+Ou seja, há forte correlação visual entre AAPL e NASDAQ ao longo do tempo.
+
+## Teste de Estacionariedade
+
+```{r, message = FALSE, warning=FALSE}
+# Transformação logarítmica para estabilizar a variância
+log_dados <- log(dados)
+
+library(urca)
+library(tseries)
+
+for (var in colnames(log_dados)) {
+  serie <- na.omit(log_dados[, var])
+  
+  cat("-----", var, "-----\n")
+  
+  # Teste ADF
+  adf_res <- adf.test(serie)
+  cat("ADF Teste\n")
+  cat(sprintf("Estatística: %.3f, p-valor: %.4f\n", adf_res$statistic, adf_res$p.value))
+  if (adf_res$p.value < 0.05) {
+    cat("Resultado: Rejeita H0 → Série ESTACIONÁRIA\n")
+  } else {
+    cat("Resultado: Não rejeita H0 → Série NÃO ESTACIONÁRIA\n")
+  }
+  
+  # Teste Phillips-Perron
+  pp_res <- pp.test(serie, alternative = "stationary", type = "Z(t_alpha)")
+  cat("Phillips-Perron Teste\n")
+  cat(sprintf("Estatística: %.3f, p-valor: %.4f\n", pp_res$statistic, pp_res$p.value))
+  if (pp_res$p.value < 0.05) {
+    cat("Resultado: Rejeita H0 → Série ESTACIONÁRIA\n")
+  } else {
+    cat("Resultado: Não rejeita H0 → Série NÃO ESTACIONÁRIA\n")
+  }
+  
+  cat("\n")
+}
+
+```
+
+```{r, message = FALSE, warning=FALSE}
+# Diferenciando:
+
+log_dados_diff <- diff(log_dados)
+for (var in colnames(log_dados_diff)) {
+  serie <- na.omit(log_dados_diff[, var])
+  
+  cat("-----", var, "-----\n")
+  
+  # Teste ADF
+  adf_res <- adf.test(serie)
+  cat("ADF Teste\n")
+  cat(sprintf("Estatística: %.3f, p-valor: %.4f\n", adf_res$statistic, adf_res$p.value))
+  if (adf_res$p.value < 0.05) {
+    cat("Resultado: Rejeita H0 → Série ESTACIONÁRIA\n")
+  } else {
+    cat("Resultado: Não rejeita H0 → Série NÃO ESTACIONÁRIA\n")
+  }
+  
+  # Teste Phillips-Perron
+  pp_res <- pp.test(serie, alternative = "stationary", type = "Z(t_alpha)")
+  cat("Phillips-Perron Teste\n")
+  cat(sprintf("Estatística: %.3f, p-valor: %.4f\n", pp_res$statistic, pp_res$p.value))
+  if (pp_res$p.value < 0.05) {
+    cat("Resultado: Rejeita H0 → Série ESTACIONÁRIA\n")
+  } else {
+    cat("Resultado: Não rejeita H0 → Série NÃO ESTACIONÁRIA\n")
+  }
+  
+  cat("\n")
+}
+
+```
+
+Com isso as 3 séries são I(1)
+
+```{r, message = FALSE, warning=FALSE}
+# Visualização dos retornos logarítmicos
+plot(log_dados_diff$AAPL, main = "Retornos Logarítmicos Diários", col = "darkgreen")
+plot(log_dados_diff$NASDAQ, main = "Retornos Logarítmicos Diários", col = "darkgreen")
+plot(log_dados_diff$FEDFUNDS, main = "Retornos Logarítmicos Diários", col = "darkgreen")
+```
+
+
+```{r, message = FALSE, warning=FALSE}
+# 1. First ensure you've created the log-differenced series properly
+log_dados <- log(dados)  # Natural log transformation
+log_dados_diff <- na.omit(data.frame(
+  AAPL = c(NA, diff(log_dados$AAPL)),
+  NASDAQ = c(NA, diff(log_dados$NASDAQ)),
+  FEDFUNDS = c(NA, diff(log_dados$FEDFUNDS))
+))
+
+# 2. Plot ACF for each series (with proper NA handling)
+par(mfrow = c(1, 3))  # 3 rows, 1 column for plots
+
+# AAPL
+acf(na.omit(log_dados_diff$AAPL), 
+    main = "ACF: AAPL Log Returns",
+    lag.max = 20)
+
+# NASDAQ
+acf(na.omit(log_dados_diff$NASDAQ), 
+    main = "ACF: NASDAQ Log Returns",
+    lag.max = 20)
+
+# FEDFUNDS
+acf(na.omit(log_dados_diff$FEDFUNDS), 
+    main = "ACF: FEDFUNDS Differences",
+    lag.max = 20)
+
+# 3. Plot PACF (Partial ACF) as well
+par(mfrow = c(1, 3))
+
+# AAPL
+pacf(na.omit(log_dados_diff$AAPL), 
+     main = "PACF: AAPL Log Returns",
+     lag.max = 20)
+
+# NASDAQ
+pacf(na.omit(log_dados_diff$NASDAQ), 
+     main = "PACF: NASDAQ Log Returns",
+     lag.max = 20)
+
+# FEDFUNDS
+pacf(na.omit(log_dados_diff$FEDFUNDS), 
+     main = "PACF: FEDFUNDS Differences",
+     lag.max = 20)
+
+```
+
+```{r, message = FALSE, warning=FALSE}
+# Separar variável dependente e exógenas
+y <- log_dados$AAPL[-1]
+xreg <- as.matrix(log_dados_diff[, c("NASDAQ", "FEDFUNDS")])
+
+# Verifique se os comprimentos batem
+stopifnot(NROW(y) == NROW(xreg))
+
+# Estimar o modelo ARIMAX
+modelo_arimax <- auto.arima(y, xreg = xreg)
+summary(modelo_arimax)
+```
+
+Com isso a ordem do ARIMAX é (0,1,1)
+
+```{r, message = FALSE, warning=FALSE}
+resids <- residuals(modelo_arimax)
+# Estimar a densidade kernel
+densidade <- density(resids, kernel = "gaussian")
+# Plotar a densidade kernel
+plot(densidade, main = "Estimativa de Densidade Kernel", col = "black", lwd=2)
+hist(resids, freq = FALSE, add = TRUE, breaks = 100, col = "lightblue")
+sigma_emp = sd(resids)
+lines(density(rnorm(10000,0, sigma_emp)), col = "red", lwd=2)
+lines(densidade, col = "black", lwd=2)
+# Diagnóstico dos resíduos
+# Verificação gráfica dos resíduos
+checkresiduals(modelo_arimax)
+
+
+library(FinTS)
+# Teste de Ljung-Box para autocorrelação dos resíduos
+Box.test(resids, lag = 20, type = "Ljung-Box")
+# Teste ARCH para heteroscedasticidade nos resíduos
+ArchTest(resids, lags = 12)
+# Teste de Jarque-Bera
+jarque.bera.test(resids)
+```
+Pelo teste de Ljung-Box podemos afirmar que não tem autocorrelação.
+
+Pelo teste ARCH podemos afirmar que há heterocedasticidade condicional, algo que já se era esperado dado a natureza das séries.
+
+Pelo teste de Jarque Bera e pelo gráfico de Densidade de Kernel podemos afirmar que os residuos não seguem distribuição normal
+
+```{r, message = FALSE, warning=FALSE}
+sqr_resid <- resids^2
+par(mfrow=c(1,2))
+vacf = acf(sqr_resid, lag.max = 30, main="ACF")
+vpacf = pacf(sqr_resid, lag.max =30, main="PACF")
+# Teste de Ljung-Box para autocorrelação dos resíduos
+Box.test(sqr_resid, lag = 30, type = "Ljung-Box")
+```
+
+```{r, message = FALSE, warning=FALSE}
+library(lmtest)
+# Ajuste um modelo linear com os resíduos defasados
+mod_sqrresid_lm <- lm(sqr_resid ~ ., data = sqr_resid)
+# summary(mod_resid_lm)
+# Realizando o teste de Breusch-Godfrey para autocorrelação de ordem até 30
+bg_test <- bgtest(mod_sqrresid_lm, order = 30, type = "Chisq")
+# summary(bg_test)
+# Exibindo os resultados
+print(bg_test)
+```
+Com isso, não há autocorrelação serial, pois não é possivel rejeitar H0.
+
+```{r, message = FALSE, warning=FALSE}
+library(rugarch)
+# Função para testar diferentes modelos GARCH
+testar_modelos_garch <- function(residuos, max_p = 2, max_q = 2) {
+resultados <- data.frame(
+Modelo = character(),
+Ordem = character(),
+AIC = numeric(),
+BIC = numeric(),
+LogLik = numeric(),
+stringsAsFactors = FALSE
+)
+modelos <- c("sGARCH") # ,"eGARCH", "gjrGARCH"
+for (modelo in modelos) {
+for (p in 1:max_p) {
+for (q in 1:max_q) {
+spec <- ugarchspec(
+variance.model = list(model = modelo, garchOrder = c(p, q)),
+mean.model = list(armaOrder = c(0, 0), include.mean = FALSE),
+distribution.model = "norm"
+)
+fit <- tryCatch(
+ugarchfit(spec, residuos, solver = "hybrid"),
+error = function(e) NULL
+)
+if (!is.null(fit)) {
+resultados <- rbind(resultados, data.frame(
+Modelo = modelo,
+Ordem = paste0("(", p, ",", q, ")"),
+AIC = infocriteria(fit)[1],
+BIC = infocriteria(fit)[2],
+LogLik = likelihood(fit)
+))
+}
+}
+}
+}
+resultados[order(resultados$AIC), ]
+}
+# Exemplo de uso:
+resultados <- testar_modelos_garch(resids, max_p = 4 , max_q = 4 )
+print(resultados)
+
+```
+
+O parâmetro escolhido foi o (4,4), que é o que possui o menor AIC.
+
+## Previsão
+
+```{r, message = FALSE, warning=FALSE}
+library(forecast)
+library(rugarch)
+# Ajustar ARIMA
+summary(modelo_arimax)
+
+
+# Ajustar ARIMA-GARCH
+spec <- ugarchspec(
+variance.model = list(model = "sGARCH", garchOrder = c(4,4)),   #trocar ao mudar de parametro
+mean.model = list(armaOrder = c(0,1), include.mean = FALSE),
+distribution.model = "norm"
+)
+fit_garch <- ugarchfit(spec, residuals(modelo_arimax))
+show(fit_garch)
+
+
+```
+
+```{r, message = FALSE, warning=FALSE}
+garch_coef <- coef(fit_garch)
+garch_residuals <- residuals(fit_garch, standardize = TRUE)
+# Estimar a densidade kernel
+garch_densidade <- density(garch_residuals, kernel = "gaussian")
+# Plotar a densidade kernel
+plot(garch_densidade, main = "Estimativa de Densidade Kernel nos resíduos GARCH", col = "black", lwd=2)
+hist(garch_residuals, freq = FALSE, add = TRUE, breaks = 100, col = "lightblue")
+sigma_emp = sd(garch_residuals)
+lines(density(rnorm(10000,0, sigma_emp)), col = "red", lwd=2)
+lines(garch_densidade, col = "black", lwd=2)
+
+
+```
+
+O gráfico mostra que, apesar de ainda ter uma curtose maior, a linha preta está com um comportamento mais parecido com a de uma distribuição normal.
+
+```{r, message = FALSE, warning=FALSE}
+library(forecast)
+library(ggplot2)
+library(zoo)
+# Suponha que você quer prever 10 dias à frente
+h <- 20
+
+# Você precisa fornecer os valores futuros de NASDAQ e FEDFUNDS
+# Exemplo: criar uma matriz dummy com médias (ou previsões se tiver)
+nasdaq_futuro <- rep(tail(log_dados_diff$NASDAQ, 1), h)
+fedfunds_futuro <- rep(tail(log_dados_diff$FEDFUNDS, 1), h)
+
+xreg_futuro <- cbind(nasdaq_futuro, fedfunds_futuro)
+
+# Forecast com xreg
+fcast_arima <- forecast(modelo_arimax, h = h, xreg = xreg_futuro)
+plot(fcast_arima)
+print(fcast_arima)
+fcast_garch <- ugarchforecast(fit_garch, n.ahead = 20)
+
+
+
+# Extrair previsões e intervalos
+garch_mean <- fcast_arima$mean
+garch_sigma <- sigma(fcast_garch)
+garch_upper <- garch_mean + 1.96 * garch_sigma
+garch_lower <- garch_mean - 1.96 * garch_sigma
+# Extrair os últimos 30 pontos da série original
+serie_final <- tail(log_dados, 30)
+datas_hist <- as.Date(time(serie_final))
+ultima_data <- max(datas_hist)
+# Datas da previsão
+datas_prev <- seq(ultima_data + 1, by = "day", length.out = length(fcast_arima$mean))
+# Criar data.frames
+df_hist <- data.frame(Data = datas_hist, Valor = as.numeric(serie_final))
+df_prev <- data.frame(
+Data = datas_prev,
+Media = as.numeric(fcast_arima$mean),
+LimiteInferior = as.numeric(fcast_arima$lower[,2]), # 95%
+LimiteSuperior = as.numeric(fcast_arima$upper[,2]) # 95%
+)
+# Adiciona o último ponto da série histórica como primeiro da previsão
+ultimo_ponto <- data.frame(
+Data = ultima_data,
+Media = tail(df_hist$Valor, 1),
+LimiteInferior = tail(df_hist$Valor, 1),
+LimiteSuperior = tail(df_hist$Valor, 1)
+)
+df_prev <- rbind(ultimo_ponto, df_prev)
+df_prev_garch <- data.frame(
+Data = datas_prev,
+Media = as.numeric(garch_mean),
+LimiteInferior = as.numeric(garch_lower), # 95%
+LimiteSuperior = as.numeric(garch_upper) # 95%
+)
+df_prev_garch <- rbind(ultimo_ponto, df_prev_garch)
+# Plot com ggplot2
+ggplot() +
+geom_line(data = df_hist, aes(x = Data, y = Valor), color = "black") +
+geom_line(data = df_prev, aes(x = Data, y = Media), color = "blue") +
+geom_ribbon(data = df_prev, aes(x = Data, ymin = LimiteInferior, ymax = LimiteSuperior),
+fill = "blue", alpha = 0.2) +
+labs(title = "Previsão ARIMAX com Intervalo de Confiança 95%",
+x = "Data", y = "Valor") +
+theme_minimal()
+
+# Plot com ggplot2
+ggplot() +
+geom_line(data = df_hist, aes(x = Data, y = Valor), color = "black") +
+geom_line(data = df_prev_garch, aes(x = Data, y = Media), color = "red") +
+geom_ribbon(data = df_prev_garch, aes(x = Data, ymin = LimiteInferior, ymax = LimiteSuperior),
+fill = "red", alpha = 0.2) +
+labs(title = "Previsão ARIMAX-GARCH com Intervalo de Confiança 95%",
+x = "Data", y = "Valor") +
+theme_minimal()
+
+print(df_prev)
+print(df_prev_garch)
+```
+![Tabela feita no Excel](C:/Users/camis/OneDrive/Imagens/Capturas de tela/Captura de tela 2025-06-06 184653.png){width=50%}
+
+
+Ao transformar de volta (lembrando que os valores da coluna previsão está em log) no vigésimo dia o valor da ação da Apple será 203,87, o que se olharmos comparando com o gráfico da série ao longo do tempo é um valor razoavel, dentro dos limites.
+
+## Conclusões
+
+O modelo GARCH estimado para os retornos da ação da Apple (AAPL), incorporando as variáveis explicativas NASDAQ e FEDFUNDS, demonstrou capacidade de capturar tanto a dinâmica da média condicional quanto os padrões de volatilidade. As previsões geradas indicam uma trajetória crescente e estável para o preço da ação no período analisado (05/06/2025 a 25/06/2025), com um valor final projetado de $203,87 após a transformação inversa (exponencial) dos valores logarítmicos.
+
+Observações:
+
+A evolução diária do preço mostra um aumento gradual, alinhado com o comportamento histórico da AAPL, sem indicativos de volatilidade excessiva ou desvios abruptos.
+
+O valor final de $203,87 situa-se dentro da faixa esperada, considerando a tendência recente e os níveis de suporte/resistência observados no gráfico histórico.
+
+A metodologia ARIMAX-GARCH mostrou-se adequada para séries financeiras, combinando a flexibilidade de incorporar regressores externos (ARIMAX) com a capacidade de modelar clusters de volatilidade (GARCH).
+
+Os intervalos de confiança (não explicitados na tabela, mas calculados no modelo) reforçam que as previsões estão dentro de limites estatisticamente plausíveis.

@@ -1,0 +1,340 @@
+---
+title: "Econometria 2 - Parte 2"
+author: "Camila Sabino e Pedro Minella"
+date: "r Sys.Date()"
+output:
+  html_document:
+    theme: 
+      font_scale: 1.1   
+    toc: true
+    toc_float: true
+---
+## Introdução
+
+Este relatório tem como objetivo analisar as relações dinâmicas entre a taxa SELIC, os juros do Tesouro de 2 anos e do Tesouro de 10 anos. A metodologia empregada baseia-se na estimação de um modelo estrutural de vetores autorregressivos com diferenciação (SVARdiff), escolhido em função das características de não estacionaridade das séries em nível e da ausência de cointegração entre elas.
+
+
+```{r, message = FALSE, warning=FALSE}
+# Carregar as bibliotecas necessárias
+library(readxl)
+library(dplyr)
+library(lubridate)
+library(tidyr)
+library(zoo)
+library(rbcb)
+library(xts)
+library(purrr)
+
+# Lê os dados do Tesouro 2 anos
+tabelatesouro2 <- read_excel("C:/Users/camis/Downloads/PrecoTaxaTesouroDiretoteste.xlsx", 
+                        sheet = "PrecoTaxaTesouroDireto") %>%
+  mutate(
+    data_base = as.Date(DataBase),
+    data_vencimento = as.Date(DataVencimento),
+    prazo_anos = as.numeric(difftime(data_vencimento, data_base, units = "days")) / 365
+  ) %>%
+  filter(prazo_anos >= 1.5 & prazo_anos <= 2.5) %>%
+  dplyr::select(data_base, PU = TaxaVendaManha)
+
+# Agrega por mês
+tesouro2_mensal <- tabelatesouro2 %>%
+  mutate(mes = floor_date(data_base, "month")) %>%
+  group_by(mes) %>%
+  summarise(tesouro2 = mean(PU, na.rm = TRUE), .groups = "drop")
+
+
+# Lê os dados do Tesouro 10 anos
+tabelatesouro10 <- read_excel("C:/Users/camis/Downloads/PrecoTaxaTesouroDiretoteste.xlsx", 
+                   sheet = "PrecoTaxaTesouroDireto") %>%
+  mutate(
+    data_base = as.Date(DataBase),
+    data_vencimento = as.Date(DataVencimento),
+    prazo_anos = as.numeric(difftime(data_vencimento, data_base, units = "days")) / 365
+  ) %>%
+  filter(prazo_anos >= 9.5 & prazo_anos <= 10.5) %>%
+  dplyr::select(data_base, PU = TaxaVendaManha)
+
+# Agrega por mês
+tesouro10_mensal <- tabelatesouro10 %>%
+  mutate(mes = floor_date(data_base, "month")) %>%
+  group_by(mes) %>%
+  summarise(tesouro_10anos = mean(PU, na.rm = TRUE), .groups = "drop")
+
+
+# Baixa SELIC diária e transforma em mensal
+selic <- get_series(4189, start_date = "2000-01-01") %>%
+   rename(mes = date, selic = `4189`)
+
+
+# Junta tudo num único dataframe
+dbvar <- reduce(
+  list(selic, tesouro2_mensal, tesouro10_mensal),
+  full_join,
+  by = "mes"
+) %>%
+  arrange(mes)
+
+# Remove linhas com NA antes de converter para série temporal
+dbvar_limp <- na.omit(dbvar)
+
+# Converte para série temporal multivariada
+ts_dbvar <- ts(
+  dbvar_limp[,-1],  # remove a coluna "mes"
+  start = c(year(min(dbvar_limp$mes)), month(min(dbvar_limp$mes))),
+  frequency = 12
+)
+plot.ts(ts_dbvar, main = "Séries Temporais: SELIC e Títulos do Tesouro", xlab = "Ano", col = 1:3)
+legend("topright", legend = colnames(ts_dbvar), col = 1:3, lty = 1)
+```
+
+```{r, message = FALSE, warning=FALSE}
+ts_dbvar_log <- log(ts_dbvar)
+plot.ts(ts_dbvar_log , main = "Séries Temporais: SELIC e Títulos do Tesouro", xlab = "Ano", col = 1:3)
+legend("topright", legend = colnames(ts_dbvar), col = 1:3, lty = 1)
+```
+
+## Teste de Raiz Unitária
+
+Nessa seção iremos testar para ver se de fato as séries são estacionárias. Inicialmente, foram conduzidos testes de estacionaridade (Augmented Dickey-Fuller - ADF e Phillips-Perron) nas séries em nível.
+
+```{r, message = FALSE, warning=FALSE}
+
+library(urca)
+library(tseries)
+
+for (var in colnames(ts_dbvar_log)) {
+  serie <- na.omit(ts_dbvar_log[, var])
+  
+  cat("-----", var, "-----\n")
+  
+  # Teste ADF
+  adf_res <- adf.test(serie)
+  cat("ADF Teste\n")
+  cat(sprintf("Estatística: %.3f, p-valor: %.4f\n", adf_res$statistic, adf_res$p.value))
+  if (adf_res$p.value < 0.05) {
+    cat("Resultado: Rejeita H0 → Série ESTACIONÁRIA\n")
+  } else {
+    cat("Resultado: Não rejeita H0 → Série NÃO ESTACIONÁRIA\n")
+  }
+  
+  # Teste Phillips-Perron
+  pp_res <- pp.test(serie, alternative = "stationary", type = "Z(t_alpha)")
+  cat("Phillips-Perron Teste\n")
+  cat(sprintf("Estatística: %.3f, p-valor: %.4f\n", pp_res$statistic, pp_res$p.value))
+  if (pp_res$p.value < 0.05) {
+    cat("Resultado: Rejeita H0 → Série ESTACIONÁRIA\n")
+  } else {
+    cat("Resultado: Não rejeita H0 → Série NÃO ESTACIONÁRIA\n")
+  }
+  
+  cat("\n")
+}
+
+diff_mat <- diff(ts_dbvar_log)
+for (var in colnames(diff_mat)) {
+  serie <- na.omit(diff_mat[, var])
+  
+  cat("-----", var, "-----\n")
+  
+  # Teste ADF
+  adf_res <- adf.test(serie)
+  cat("ADF Teste\n")
+  cat(sprintf("Estatística: %.3f, p-valor: %.4f\n", adf_res$statistic, adf_res$p.value))
+  if (adf_res$p.value < 0.05) {
+    cat("Resultado: Rejeita H0 → Série ESTACIONÁRIA\n")
+  } else {
+    cat("Resultado: Não rejeita H0 → Série NÃO ESTACIONÁRIA\n")
+  }
+  
+  # Teste Phillips-Perron
+  pp_res <- pp.test(serie, alternative = "stationary", type = "Z(t_alpha)")
+  cat("Phillips-Perron Teste\n")
+  cat(sprintf("Estatística: %.3f, p-valor: %.4f\n", pp_res$statistic, pp_res$p.value))
+  if (pp_res$p.value < 0.05) {
+    cat("Resultado: Rejeita H0 → Série ESTACIONÁRIA\n")
+  } else {
+    cat("Resultado: Não rejeita H0 → Série NÃO ESTACIONÁRIA\n")
+  }
+  
+  cat("\n")
+}
+```
+
+Os testes de Dickey-Fuller aumentado (ADF) aplicados às séries em nível indicaram a presença de raiz unitária tanto na SELIC quanto nos juros do Tesouro de 2 anos e de 10 anos, o que caracteriza não estacionariedade. A realização da primeira diferenciação foi suficiente para tornar todas as séries estacionárias, como confirmado pelos mesmos testes aplicados após a transformação. 
+
+
+## Teste de Johasen
+
+Dados os resultados anteriores, iremos testar se há ou não cointegração entre as variáveis para ver se faremos um VEC ou um VAR em diferenças.
+
+```{r, message = FALSE, warning=FALSE}
+johansen_test1 <- ca.jo(ts_dbvar_log, type = "trace", ecdet = "trend", K = 2)
+summary(johansen_test1)
+johansen_test2 <- ca.jo(ts_dbvar_log, type = "eigen", ecdet = "trend", K = 2)
+summary(johansen_test2)
+```
+
+Os testes de cointegração não identificaram qualquer relação de equilíbrio de longo prazo entre as variáveis, o que reforça a escolha do SVARdiff como ferramenta adequada, priorizando a análise das relações de curto prazo entre as séries.
+
+## VAR 
+
+```{r, message = FALSE, warning=FALSE}
+library(vars)
+# 2. VAR com p lags (escolha automática)
+# Vetor com a ordem desejada
+ordered_vars <- c("tesouro_10anos", "tesouro2", "selic")
+
+# Reordenando as colunas de diff_mat
+diff_mat <- diff_mat[, ordered_vars]
+var_order <- VARselect(diff_mat, lag.max = 10, type = "const")$selection
+print(var_order)
+# 3. Estima VAR 
+var_model <- VAR(diff_mat, p = 1, type = "const")
+summary(var_model)
+
+library(stargazer)
+stargazer(var_model$varresult,
+          type = "text",   # "text" para console, ou "html"/"latex" para outros formatos
+          title = "Resumo do Modelo VAR",
+          dep.var.labels.include = TRUE,
+          digits = 3,
+          star.cutoffs = c(0.05, 0.01, 0.001),
+          no.space = TRUE)
+
+eigenvalues <- roots(var_model)
+print(eigenvalues)
+# Plotar o círculo unitário
+plot(0, 0, type = "n", xlab = "Parte Real", ylab = "Parte Imaginária",
+xlim = c(-1.5, 1.5), ylim = c(-1.5, 1.5), asp = 1)
+symbols(0, 0, circles = 1, inches = FALSE, add = TRUE)
+# Plotar as raízes
+points(Re(eigenvalues), Im(eigenvalues), col = "red", pch = 19)
+# Adicionar título
+title("Raízes do Polinômio Característico no Círculo Unitário")
+
+```
+
+A análise da estabilidade foi realizada por meio da verificação das raízes do polinômio característico do VAR. O teste do círculo unitário mostrou que todas as raízes estão dentro do círculo, ou seja, possuem módulo inferior a um, garantindo assim que o sistema seja estável e que os efeitos dos choques se dissipem ao longo do tempo, retornando ao equilíbrio de curto prazo.
+
+Iremos fazer agora uma análise dos resíduos do VAR também:
+
+```{r, message = FALSE, warning=FALSE}
+# Plotando as séries individuais dos resíduos
+resids = residuals(var_model)
+resids = ts(resids, start=start(ts_dbvar_log), frequency = 12)
+par(mfrow = c(1, ncol(resids))) # Configura o layout para múltiplos gráficos
+for (i in 1:ncol(resids)) {
+plot.ts(resids[, i], main = paste("Resíduo da Série", colnames(resids)[i]))
+}
+
+
+```
+
+```{r, message = FALSE, warning=FALSE}
+# Ljung-Box test, also known as a portmanteau test
+serial.test(var_model, lags.pt = 12, type = "PT.asymptotic")
+# Breusch-Godfrey test
+serial.test(var_model, lags.bg = 12, type = "BG")
+# Jarque-Bera
+normality.test(var_model,multivariate.only = TRUE)
+# Heteroscedasticidade
+arch_test <- arch.test( var_model, lags.multi = 12, multivariate.only = TRUE)
+print(arch_test)
+```
+
+O teste de autocorrelação dos resíduos, realizado por meio do Portmanteau, indicou ausência de autocorrelação serial nas equações, o que evidencia que a dinâmica do modelo está corretamente especificada e que não há informação relevante deixada nos resíduos. 
+
+Por outro lado, o teste de normalidade de Jarque-Bera apontou violações da hipótese de normalidade em algumas equações, o que não compromete a consistência dos estimadores, mas sugere certa cautela na interpretação dos intervalos de confiança associados às funções impulso-resposta e à decomposição da variância.
+
+Faremos então o SVAR:
+
+## SVAR
+
+A identificação estrutural do modelo foi realizada através de restrições contemporâneas impostas na matriz B, que define como os choques estruturais afetam diretamente as variáveis do sistema. As restrições adotadas refletem a lógica econômica da transmissão da política monetária ao longo da curva de juros.
+
+Partiu-se da hipótese de que choques na SELIC têm efeito contemporâneo sobre o Tesouro de 2 anos, refletindo a transmissão direta da política monetária para os juros de curto e médio prazo. No entanto, assumiu-se que esse choque não impacta imediatamente o Tesouro de 10 anos, cuja dinâmica responde, prioritariamente, às expectativas sobre a trajetória futura da economia, e não a movimentos instantâneos da taxa básica.
+
+O Tesouro de 2 anos, além de ser afetado pela SELIC, também responde aos seus próprios choques e exerce efeito contemporâneo sobre o Tesouro de 10 anos. Este último é modelado como uma variável passiva no sistema contemporâneo, ou seja, reage aos choques no Tesouro de 2 anos e aos seus próprios choques, mas não influencia de forma contemporânea nem a SELIC nem o Tesouro de 2 anos. Essa configuração é coerente com o papel do Tesouro de 10 anos como refletor das expectativas de longo prazo, sendo menos sensível às variações de curto prazo.
+
+```{r, message = FALSE, warning=FALSE}
+library(vars)
+library(urca)
+
+# 3. Agora estime o SVAR na representação VAR
+library(svars)
+svar_chol <- id.chol(var_model)
+svar_chol
+# Alternativa usando função SVAR:
+b_chol <- svar_chol$B
+diag(b_chol) <- NA
+b_chol[2,1] <- NA
+b_chol[3,1:2] <- NA
+svar_chol2 <- SVAR(var_model, Amat = NULL, Bmat = b_chol, estmethod = "scoring")
+svar_chol2
+
+#Colocando restrições de curto prazo:
+A_mat <- NULL
+B_mat <- matrix(NA, 3, 3)
+diag(B_mat) <- 1
+B_mat[1,2] <- 0 
+B_mat[1,3] <- 0 
+B_mat[2,3] <- 0 
+svar_ab <- SVAR(var_model, Amat = A_mat, Bmat = B_mat, estmethod = "scoring")
+svar_ab
+
+
+```
+
+Iremos fazer Funções de Resposta ao Impulso (IRF):
+
+```{r, message = FALSE, warning=FALSE}
+# IRFs para ambos os modelos
+irf_chol <- irf(svar_chol2, impulse = NULL, response = NULL, n.ahead = 24, boot = TRUE)
+plot(irf_chol)
+
+irf_ab <- irf(svar_ab, impulse = NULL, response = NULL, n.ahead = 24, boot = TRUE)
+plot(irf_ab)
+
+# Função para plotar IRFs comparando os dois modelos
+plot_irf_comparison <- function(svar1, svar2, legend, n.ahead = 24) {
+vars <- colnames(svar_chol$VAR$y)
+par(mfrow = c(length(vars), length(vars)), mar = c(3, 3, 2, 1))
+for (impulse in vars) {
+for (response in vars) {
+irf1 <- irf(svar1, impulse = impulse, response = response, n.ahead = n.ahead, boot = FALSE)
+irf2 <- irf(svar2, impulse = impulse, response = response, n.ahead = n.ahead, boot = FALSE)
+plot(irf1$irf[[1]], type = "l", col = "blue", ylim = range(c(irf1$irf[[1]], irf2$irf[[1]])),
+main = paste(impulse, "→", response), ylab = "", xlab = "")
+lines(irf2$irf[[1]], col = "red", lty = 2)
+abline(h = 0, col = "gray")
+}
+}
+legend("topright", legend = legend, col = c("blue", "red"), lty = c(1, 2), bty = "n")
+}
+# Gerar os gráficos
+plot_irf_comparison(svar_chol2, svar_ab, c("Cholesky", "SVAR_Bmat"), n.ahead = 12)
+```
+
+As funções impulso-resposta obtidas permitem observar de maneira clara a dinâmica dos efeitos dos choques nas variáveis ao longo do tempo. Um choque positivo na SELIC gera um efeito imediato e expressivo no Tesouro de 2 anos, o que é esperado dado que a política monetária tem efeito direto sobre os juros de curto e médio prazo. A resposta do Tesouro de 10 anos a esse mesmo choque é mais lenta e apresenta menor magnitude, indicando que os juros de longo prazo são menos sensíveis a alterações pontuais na taxa básica, reagindo de forma mais gradual, sobretudo na medida em que as expectativas sobre a trajetória futura da política monetária vão se ajustando.
+
+Por outro lado, um choque no Tesouro de 2 anos produz um efeito considerável sobre o Tesouro de 10 anos, com resposta quase imediata e de magnitude relevante. Este resultado evidencia que a parte intermediária da curva de juros exerce papel central na transmissão de informações para o longo prazo, funcionando como ponte entre as dinâmicas de curto prazo, diretamente influenciadas pela política monetária, e o comportamento das taxas de longo prazo. A resposta da SELIC a um choque no Tesouro de 2 anos, no entanto, é praticamente nula, o que faz sentido, uma vez que a política monetária não reage de forma contemporânea a oscilações nos juros de mercado de prazo intermediário.
+
+Quando se observa um choque no Tesouro de 10 anos, verifica-se que tanto a SELIC quanto o Tesouro de 2 anos apresentam respostas desprezíveis, o que reforça a interpretação de que os juros de longo prazo refletem principalmente expectativas e outros fatores estruturais, sem exercerem influência imediata sobre a condução da política monetária ou sobre os juros de prazos menores.
+
+
+```{r, message = FALSE, warning=FALSE}
+library(vars)
+library(ggplot2)
+library(scales)
+
+# Previsão para 8 períodos à frente
+forecast_var <- predict(var_model, n.ahead = 8)
+plot(forecast_var)
+print(forecast_var)
+```
+
+A avaliação da capacidade preditiva do modelo foi conduzida por meio de uma previsão dinâmica fora da amostra. Visualmente, as previsões foram capazes de replicar de forma bastante satisfatória a trajetória das séries diferenciadas, sobretudo no caso da SELIC e do Tesouro de 2 anos, onde a aderência entre os valores previstos e os observados foi bastante próxima. A qualidade da previsão para o Tesouro de 10 anos, embora razoável, foi inferior em relação às outras variáveis, o que é consistente com a natureza dessa variável, cuja dinâmica é fortemente guiada por expectativas de longo prazo e, consequentemente, mais difícil de ser capturada por modelos baseados apenas na dinâmica das taxas passadas.
+
+## Considerações Finais
+
+Os resultados obtidos indicam que o SVAR com diferenciação foi apropriado para capturar as dinâmicas de curto prazo entre a taxa SELIC, os juros do Tesouro de 2 anos e de 10 anos. O modelo apresentou estabilidade, ausência de autocorrelação dos resíduos e identificação estrutural coerente com a teoria econômica. As funções impulso-resposta confirmaram a forte influência da política monetária sobre o segmento curto e médio da curva de juros, enquanto o Tesouro de 10 anos respondeu de maneira mais indireta e mediada pelos movimentos do Tesouro de 2 anos. Por fim, a análise de previsão demonstrou que o modelo possui boa capacidade preditiva no curto prazo, especialmente para as taxas mais sensíveis às decisões de política monetária.

@@ -1,0 +1,362 @@
+---
+title: "Ethereum"
+author: "Camila Sabino Ribeiro"
+output: 
+ html_document:
+   toc: true
+   toc_float: true
+date: "2025-04-28"
+---
+
+## **Motivação Econômica**
+<p style="text-align: justify;">• O Ethereum é uma plataforma descentralizada que possibilita a criação e execução de contratos inteligentes, sendo a segunda maior criptomoeda em valor de mercado, logo após o Bitcoin. Ele surgiu com a proposta de criar um ambiente mais flexível para a inovação em relação às limitações do Bitcoin, oferecendo uma infraestrutura mais robusta para aplicativos descentralizados (dApps).
+
+<p/> <p style="text-align: justify;">• A motivação econômica por trás do Ethereum está em transformar o sistema financeiro e os contratos tradicionais, tornando-os mais transparentes, eficientes e acessíveis a todos, sem a necessidade de intermediários. A blockchain do Ethereum oferece uma rede global de confiança para realizar transações seguras e à prova de censura.<p/>
+
+#### Principais Características do Ethereum:
+
+– Descentralização: A rede Ethereum não depende de uma autoridade central, o que garante maior segurança e resistência à censura;
+
+– Contratos Inteligentes: São contratos autoexecutáveis que permitem a automação de processos sem a necessidade de intermediários, como advogados ou notários;
+
+– Tokenização e DeFi: Ethereum serve como base para a criação de tokens e para o desenvolvimento de finanças descentralizadas (DeFi), revolucionando o setor bancário tradicional e permitindo empréstimos, negociações e investimentos de forma peer-to-peer.
+
+------------------------------------------------------------------------
+
+## **Análise Exploratória e Gráfica**
+
+Nesta etapa, vamos carregar os dados do Ethereum e realizar a análise gráfica da série e definir o melhor modelo.
+
+```{r, message = FALSE}
+library(quantmod)
+
+# Puxar dados do Ethereum (ETH-USD) do Yahoo Finance
+getSymbols("ETH-USD", src = "yahoo", from = "2015-01-01", to = Sys.Date())
+chartSeries(`ETH-USD`, type = "line", theme = chartTheme("white"), name = "Preço do Ethereum (ETH-USD)",  line.col = "darkred")
+```
+
+Visualmente podemos inferir que a série não parece ser estacionária. Podemos utilizar uma função de decomposição da série para destacar tendência, sazonalidade e componente irregular:
+
+```{r, message = FALSE}
+eth <- getSymbols("ETH-USD", src = "yahoo", from = "2015-01-01", 
+                       to = Sys.Date(), auto.assign = FALSE)
+eth_close <- Cl(eth)
+# Converter para série ts
+eth_ts <- ts(as.numeric(eth_close), frequency = 365, start = c(2015, 1))
+
+library(ggplot2)
+library(forecast)
+decomp <- decompose(eth_ts)
+autoplot(decomp) +
+  ggtitle("Decomposição da Série do Ethereum")
+
+```
+
+A decomposição da série do Ethereum mostra que ele possui: 
+
+• Tendência não linear e acentuada;
+
+• Sazonalidade marcante;
+
+• Alta volatilidade e resíduos com comportamento explosivo em alguns períodos.
+
+### Verificação de Estacionaridade e Diferenciação
+
+• A estacionaridade é essencial para a modelagem Box-Jenkins, que consiste na estimação (data fitting) de modelos da família ARIMA.
+
+• A série do Ethereum não é estacionária, pois tem tendência.
+
+• Por enquanto, aplicamos a primeira diferenciação e visualizamos o resultado:
+
+```{r, message = FALSE}
+library(tseries)
+eth_diff <- diff(log(eth_ts))
+autoplot(eth_diff) +
+  ggtitle("Série do Ethereum após Primeira Diferenciação") +
+  xlab("Tempo") +
+  ylab(" Tx crescimento Ethereum")
+
+```
+
+Vamos agora testar se a série diferenciada é estacionária:
+
+#### Teste de Dickey-Fuller
+
+```{r, message = FALSE, warning=FALSE}
+# Remover os NAs da série
+eth_diff_sem_na <- na.omit(eth_diff)
+
+# Agora aplicar o teste ADF
+adf.test(eth_diff_sem_na)
+
+```
+
+#### Teste de Phillips-Perron
+
+```{r, message = FALSE, warning=FALSE}
+pp_test <- pp.test(eth_diff)
+print(pp_test)
+```
+
+#### Teste de KPSS
+
+```{r, message = FALSE, warning=FALSE}
+kpss_test <- kpss.test(eth_diff)
+print(kpss_test)
+```
+
+Com isso, podemos concluir que a série é estacionária, pois o teste de Dickey-Fuller e Phillips-Perron apresentaram um p valor baixo, ou seja podemos rejeitar a hipótese nula → Não há Raiz Unitária e vale a hipótese alternativa: o processo é estacionário. E pelo teste de KPSS não possível rejeitar a hipótese nula, portanto, é estácionario.
+
+### Identificação da ordem do modelo
+
+#### Metodologia Box-Jenkins: Grid Search
+
+Correlograma da série de IPCA com 1 diferenciação:
+
+```{r, message = FALSE, warning=FALSE}
+par(mfrow=c(1,2))
+vacf <- acf(eth_diff_sem_na, lag.max = 12, main="ACF")
+vpacf <- pacf(eth_diff_sem_na, lag.max = 12, main="PACF")
+```
+
+Pelo gráfico da ACF, observa-se um valor com significância no lag 6, o que sugere que a série pode ser modelada por um processo MA(6). Já o gráfico da PACF apresenta significância na defasagem 9, indicando a possibilidade de um componente AR(9).
+
+Desse modo, a partir da análise do correlograma da série, exploramos diferentes combinações dos parâmetros p e q (variando de 0 a 9 e 0 a 6, respectivamente) e compararemos os modelos com base nos critérios AIC e BIC.
+
+
+```{r, message = FALSE, warning=FALSE}
+
+# Definindo intervalos para os parâmetros p e q
+p_range <- 0:9
+q_range <- 0:6
+# Inicializando objetos para armazenar os modelos e resultados
+modelos <- list()
+resultados <- data.frame(p = integer(), d = integer(), q = integer(),
+                         
+                         AIC = double(), BIC = double(), stringsAsFactors = FALSE)
+
+# Loop para testar todas as combinações de p e q
+for (p in p_range) {
+  for (q in q_range) {
+    order_spec <- c(p, 0, q)
+    modelo_atual <- try(arima(eth_diff_sem_na, order = order_spec), silent = TRUE)
+    if (!inherits(modelo_atual, "try-error")) {
+      aic_val <- AIC(modelo_atual)
+      bic_val <- BIC(modelo_atual)
+      resultados <- rbind(resultados, data.frame(p = p, d = 0, q = q,
+                                                 
+                                                 AIC = aic_val, BIC = bic_val))
+      nome_modelo <- paste("ARIMA(", p, ",", 0, ",", q, ")", sep = "")
+      modelos[[nome_modelo]] <- modelo_atual
+      cat(sprintf("Modelo %s: AIC = %.2f, BIC = %.2f\n", nome_modelo, aic_val, bic_val))
+    }
+  }
+}
+# Visualizando a tabela de resultados
+print(resultados)
+
+```
+
+Selecionando o melhor modelo baseado no menor AIC
+
+```{r, message = FALSE, warning=FALSE}
+melhor_index <- which.min(resultados$AIC)
+melhor_modelo_params <- resultados[melhor_index, ]
+nome_melhor_modelo <- paste("ARIMA(", melhor_modelo_params$p, ",",
+                            
+                            melhor_modelo_params$d, ",", melhor_modelo_params$q, ")", sep = "")
+
+melhor_modelo <- modelos[[nome_melhor_modelo]]
+cat("Melhor modelo selecionado:", nome_melhor_modelo,
+    "com AIC =", melhor_modelo_params$AIC, "\n")
+
+```
+
+Comparando com o modelo sugerido pelo auto.arima():
+
+```{r, message = FALSE, warning=FALSE}
+modelo_auto <- auto.arima(eth_diff)
+cat("Modelo sugerido pelo auto.arima():\n")
+summary(modelo_auto)
+```
+
+
+Pelo valor alto do MA(6), encontrado de forma manual, que pode indicar a sazonalidade, iremos fazer o SARIMA:
+```{r}
+# Estimar modelo SARIMA automaticamente
+modelo_sarima <- auto.arima(eth_ts, seasonal = TRUE, stepwise = FALSE, approximation = FALSE)
+
+# Ver resultados
+summary(modelo_sarima)
+
+```
+
+A partir disso, o melhor modelo com base no menor AIC é o ARIMA(2,0,6), entretanto o modelo sugerido pelo auto.arima() é o ARIMA(2,0,3), mas como o BIC do ARIMA(2,0,6) também é maior iremos trabalhar com ele,além disso o modelo SARIMA indicou ARIMA(5,1,0) só que 5 termos AR são raros em séries financeiras e podem indicar overfitting (a menos que sejam todos significativos). Em resumo, o modelo escolhido será o ARIMA(2,0,6), mas vale ressaltar que termos MA(6) podem capturar ruídos complexos, mas também podem ser excessivos.
+
+Após ajustar um modelo de séries temporais, como um ARIMA, é fundamental realizar o diagnóstico dos resíduos para verificar se o modelo é adequado. Um bom modelo deve produzir resíduos que se comportem como ruído branco, ou seja, sem autocorrelação, com média próxima de zero e variância constante. Desse modo, iremos fazer a validação do modelo a partir do diagnóstico dos resíduos.
+
+------------------------------------------------------------------------
+
+## **Validação do Modelo**
+
+Iremos fazer um diagnóstico de resíduos e aplicar testes de normalidade, autocorrelação e heteroscedasticidade.
+
+### Diagnóstico dos Resíduos
+
+```{r, message = FALSE, warning=FALSE}
+checkresiduals(melhor_modelo)
+```
+
+Dessa forma, pelo teste de Ljung-Box não podemos rejeitar a hipótese nula de que não há correlação entre os erros.
+
+### Teste de Normalidade
+
+#### Estimativa de Kernel
+
+```{r, message = FALSE, warning=FALSE}
+library("xts")
+# Estimar a densidade kernel
+densidade <- density(eth_diff_sem_na, kernel = "gaussian")
+# Plotar a densidade kernel
+plot(densidade, main = "Estimativa de Densidade Kernel", xlim=c(-1,1),ylim=c(0,14), col = "black", lwd=2)
+hist(eth_diff_sem_na, freq = FALSE, add = TRUE, breaks = 50, col = "lightblue")
+sigma_emp = sd(eth_diff_sem_na)
+lines(density(rnorm(10000,0, sigma_emp)), col = "red", lwd=2)
+lines(densidade, col = "black", lwd=2)
+```
+
+A estimativa de densidade kernel revela que os dados apresentam assimetria negativa e desvios da normalidade (curtose elevada e cauda mais longa à esquerda)
+
+#### Teste de Jarque-Bera
+
+```{r, message = FALSE, warning=FALSE}
+library(moments)
+# Calculando os momentos
+mean_x <- mean(eth_diff_sem_na) # Primeiro momento: média
+var_x <- var(eth_diff_sem_na) # Segundo momento: variância
+skew_x <- skewness(eth_diff_sem_na) # Terceiro momento: assimetria
+kurt_x <- kurtosis(eth_diff_sem_na) # Quarto momento: curtose
+# Criando a tabela com os momentos
+momentos <- data.frame(
+  Momento = c("Média", "Variância", "Assimetria", "Curtose"),
+  Valor = c(mean_x, var_x, skew_x, kurt_x)
+)
+# Exibindo a tabela
+print(momentos)
+# Realizando o teste de Jarque-Bera
+jb_test <- jarque.bera.test(eth_diff_sem_na)
+# Exibindo os resultados
+print(jb_test)
+# Realizando o teste de Shapiro-Wilk
+sw_test <- shapiro.test(eth_diff_sem_na[1:5000])
+# Exibindo os resultados
+print(sw_test)
+
+```
+
+Pelo teste de Jarque-Bera, com um p-valor muito pequeno indica que a série eth_diff não segue uma distribuição normal e esse resultado é corroborado também pelo teste de Shapiro-Wilk, que indica a série não é normalmente distribuída, pois é possível rejeitar a hipótese nula.
+
+### Teste LM
+
+```{r, message = FALSE, warning=FALSE}
+library(lmtest)
+modelo_ar1 <- arima(eth_diff_sem_na, order= c(2,0,6))
+residuos <- residuals(modelo_ar1)
+
+# Ajuste um modelo linear com os resíduos defasados
+mod_resid_lm <- lm(residuos ~ ., data = residuos)
+
+# Realizando o teste de Breusch-Godfrey para autocorrelação de ordem até 12
+bg_test <- bgtest(mod_resid_lm, order = 12, type = "Chisq")
+
+# Exibindo os resultados
+print(bg_test)
+
+
+```
+
+Esse resultado corrobora com o Ljung-Box, em que não conseguimos rejeitar a hipótese nula de que não autocorrelação entre os resíduos.
+
+### Teste ARCH-LM
+
+```{r, message = FALSE, warning=FALSE}
+# Passo 1: Extrair os resíduos do seu modelo ARIMA
+residuos <- residuals(modelo_ar1)  
+
+# Passo 2: Definir o número de defasagens (lags) para o teste ARCH
+q <- 3  # Testando ARCH(3) 
+
+# Passo 3: Criar matriz de dados com resíduos ao quadrado e suas defasagens
+n <- length(residuos)
+resid2 <- residuos^2
+dados_arch <- data.frame(
+  resid2 = resid2[(q+1):n]  # Variável dependente: resíduos ao quadrado
+)
+
+# Adicionar defasagens como variáveis explicativas
+for (lag in 1:q) {
+  dados_arch[[paste0("lag", lag)]] <- resid2[(q+1 - lag):(n - lag)]
+}
+
+# Passo 4: Regressão auxiliar (resíduos² ~ lags dos resíduos²)
+modelo_aux <- lm(resid2 ~ ., data = dados_arch)
+
+# Passo 5: Calcular a estatística ARCH-LM (TR²) e o p-valor
+r_squared <- summary(modelo_aux)$r.squared
+lm_stat <- n * r_squared  # Estatística do teste (~Chi-quadrado com 'q' graus de liberdade)
+p_value <- pchisq(lm_stat, df = q, lower.tail = FALSE)  # p-valor
+
+# Passo 6: Resultado
+cat("\nTeste ARCH-LM para", q, "defasagens:\n",
+    "Estatística LM =", round(lm_stat, 4), "\n",
+    "p-value =", round(p_value, 4), "\n")
+
+# Interpretação:
+if (p_value < 0.05) {
+  cat("Conclusão: Rejeita H0 (há efeitos ARCH -> heterocedasticidade condicional).")
+} else {
+  cat("Conclusão: Não rejeita H0 (não há evidências de ARCH).")
+}
+
+```
+
+Dessa forma, há heterocedasticidade condicional, o que até se é esperado em séries financeiras. Esse fenômeno reflete o fato de que a volatilidade dos retornos não é constante ao longo do tempo, mas sim variável, apresentando períodos de maior e menor instabilidade agrupados. Esse comportamento é conhecido como "volatility clustering".
+
+------------------------------------------------------------------------
+
+## **Previsão**
+
+Gerando previsões para os próximos 12 período:
+
+```{r, message = FALSE, warning=FALSE}
+previsoes <- forecast(melhor_modelo, h = 12)
+autoplot(previsoes) +
+  ggtitle("Previsão do Ethereum com o Melhor Modelo ARIMA") +
+  xlab("Tempo") +
+  ylab("Ethereum Previsto")
+print(previsoes)
+
+```
+
+***
+
+## **Conclusões**
+
+• A série original do Ethereum apresentou não estacionariedade, com evidência de tendência. Por isso, foi aplicada diferenciação para garantir estacionariedade antes da modelagem;
+
+• O modelo escolhido foi:
+
+ARIMA(2,0,6);
+
+Esse modelo inclui um termo autorregressivo e de média móvel (AR e MA);
+
+• Os resíduos do modelo foram avaliados quanto à autocorrelação e heterocedasticidade:
+
+   -O teste de Ljung-Box e o teste LM mostraram ausência de autocorrelação significativa nos resíduos;
+
+   -O teste ARCH-LM indicou presença de efeitos ARCH, ou seja, tem heterocedasticidade condicional, o que pode ser esperando em uma série financeira;
+
+• A normalidade dos resíduos foi analisada:
+
+   -Os testes de Jarque-Bera e Shapiro Walk indicaram que os resíduos não seguem distribuição normal.
+
